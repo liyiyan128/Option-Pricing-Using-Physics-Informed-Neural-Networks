@@ -1,19 +1,19 @@
 import torch
+import numpy as np
+from scipy.stats import norm
 from matplotlib import pyplot as plt
 
 
-def normal_cdf(x, mu=0, sigma=1):
-    return 0.5*(1 + torch.erf((x - mu)/(sigma*torch.sqrt(torch.tensor(2.)))))
-
-
 def V_BS(S, tau, K, r, sigma, type='put'):
-    d1 = (torch.log(S/K) + (r + 0.5*sigma**2)*tau)/(sigma*torch.sqrt(tau))
-    d2 = d1 - sigma*torch.sqrt(tau)
+    d1 = (np.log(S/K) + (r + 0.5*sigma**2)*tau)/(sigma*np.sqrt(tau))
+    d2 = d1 - sigma*np.sqrt(tau)
 
     if type == 'put':
-        return K*torch.exp(-r*tau)*normal_cdf(-d2) - S*normal_cdf(-d1)
+        res = K*np.exp(-r*tau)*norm.cdf(-d2) - S*norm.cdf(-d1)
     elif type == 'call':
-        return S*normal_cdf(d1) - K*torch.exp(-r*tau)*normal_cdf(d2)
+        res = S*norm.cdf(d1) - K*np.exp(-r*tau)*norm.cdf(d2)
+
+    return res
 
 
 class EuropeanPINN(torch.nn.Module):
