@@ -1,19 +1,6 @@
 import torch
-import numpy as np
-from scipy.stats import norm
+# import numpy as np
 from matplotlib import pyplot as plt
-
-
-def V_BS(S, tau, K, r, sigma, type='put'):
-    d1 = (np.log(S/K) + (r + 0.5*sigma**2)*tau)/(sigma*np.sqrt(tau))
-    d2 = d1 - sigma*np.sqrt(tau)
-
-    if type == 'put':
-        res = K*np.exp(-r*tau)*norm.cdf(-d2) - S*norm.cdf(-d1)
-    elif type == 'call':
-        res = S*norm.cdf(d1) - K*np.exp(-r*tau)*norm.cdf(d2)
-
-    return res
 
 
 class EuropeanPINN(torch.nn.Module):
