@@ -4,7 +4,7 @@ from matplotlib import pyplot as plt
 
 
 class EuropeanPINN(torch.nn.Module):
-    def __init__(self, nn, K, T, r, sigma, S_inf=1e8, type='put'):
+    def __init__(self, nn, K, T, r, sigma, S_inf=1e8, type='put', device=None):
         super(EuropeanPINN, self).__init__()
         self.V_nn = nn
         self.optimizer = None
@@ -20,6 +20,8 @@ class EuropeanPINN(torch.nn.Module):
         self.sigma = sigma
         self.S_inf = S_inf
         self.type = type
+        self.device = device or 'cpu'
+        self.to(self.device)
 
     def forward(self, S, tau):
         V = self.V_nn(torch.cat((S, tau), dim=1))
