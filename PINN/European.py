@@ -6,21 +6,20 @@ from matplotlib import pyplot as plt
 class EuropeanPINN(torch.nn.Module):
     def __init__(self, nn, K, T, r, sigma, S_inf=1e8, type='put', device=None):
         super(EuropeanPINN, self).__init__()
-        self.V_nn = nn
-        self.optimizer = None
         self.loss_history = {
             'ib': [],
             'pde': [],
             'data': [],
             'total': [],
         }
-        self.K = K
-        self.T = T
-        self.r = r
-        self.sigma = sigma
-        self.S_inf = S_inf
         self.type = type
         self.device = device or 'cpu'
+        self.V_nn = nn.to(self.device)
+        self.register_buffer('K', torch.tensor(K))
+        self.register_buffer('T', torch.tensor(T))
+        self.register_buffer('r', torch.tensor(r))
+        self.register_buffer('sigma', torch.tensor(sigma))
+        self.register_buffer('S_inf', torch.tensor(S_inf))
         self.to(self.device)
 
     def forward(self, S, tau):
@@ -64,6 +63,13 @@ class EuropeanPINN(torch.nn.Module):
             self.optimizer = torch.optim.Adam(self.parameters(), **kwargs)
         elif optimizer == 'lbfgs':
             self.optimizer = torch.optim.LBFGS(self.parameters(), **kwargs)
+
+        S_ib, tau_ib, V_ib, S_pde, tau_pde, S_data, tau_data, V_data = \
+            S_ib.to(self.device), tau_ib.to(self.device), V_ib.to(self.device), \
+            S_pde.to(self.device), tau_pde.to(self.device), \
+            S_data.to(self.device) if S_data is not None else None, \
+            tau_data.to(self.device) if tau_data is not None else None, \
+            V_data.to(self.device) if V_data is not None else None
 
         def closure():
             self.optimizer.zero_grad()
