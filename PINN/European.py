@@ -94,7 +94,7 @@ class EuropeanPINN(torch.nn.Module):
                 print(f'Epoch {i+1}/{epochs}:\nIB Loss: {loss_ib}\nPDE Loss: {loss_pde}\nData Loss: {loss_data}\n')
 
     def plot_loss(self, ib=True, pde=True, data=True,
-                  range=-1, log_scale=True, title='Loss History', save=False, file_name='loss_history.pdf'):
+                  range=-1, log_scale=True, title='Loss History', save=False, file_name='loss_history.pdf', fontsize=14):
         plt.plot(self.loss_history['total'][:range], label='Total Loss', c='red')
         if ib:
             plt.plot(self.loss_history['ib'][:range], label='IB Loss', ls='--', alpha=0.8)
@@ -102,12 +102,12 @@ class EuropeanPINN(torch.nn.Module):
             plt.plot(self.loss_history['pde'][:range], label='PDE Loss', ls='--', alpha=0.8)
         if data:
             plt.plot(self.loss_history['data'][:range], label='Data Loss', ls='--', alpha=0.8)
-        plt.xlabel('Epoch')
-        plt.ylabel('Loss')
+        plt.xlabel('Epoch', fontsize=fontsize)
+        plt.ylabel('Loss', fontsize=fontsize)
         if log_scale:
             plt.yscale('log')
-        plt.title(title)
-        plt.legend()
+        plt.title(title, fontsize=fontsize+2)
+        plt.legend(fontsize=fontsize)
         if save:
             plt.savefig(file_name)
         plt.show()
