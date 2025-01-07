@@ -11,7 +11,8 @@ class EuropeanPINN(torch.nn.Module):
         self.loss_history = {
             'ib': [],
             'pde': [],
-            'data': []
+            'data': [],
+            'total': [],
         }
         self.K = K
         self.T = T
@@ -73,22 +74,26 @@ class EuropeanPINN(torch.nn.Module):
             self.optimizer.step(closure)
 
             loss_ib, loss_pde, loss_data = self.loss(S_ib, tau_ib, V_ib, S_pde, tau_pde, S_data, tau_data, V_data)
+            total = loss_ib.item() + loss_pde.item()
             self.loss_history['ib'].append(loss_ib.item())
             self.loss_history['pde'].append(loss_pde.item())
             if S_data is not None:
+                total += loss_data.item()
                 self.loss_history['data'].append(loss_data.item())
+            self.loss_history['total'].append(total)
 
             if verbose and (i+1) % 100 == 0:
                 print(f'Epoch {i+1}/{epochs}:\nIB Loss: {loss_ib}\nPDE Loss: {loss_pde}\nData Loss: {loss_data}\n')
 
     def plot_loss(self, ib=True, pde=True, data=True,
                   range=-1, log_scale=True, title='Loss History', save=False, file_name='loss_history.pdf'):
+        plt.plot(self.loss_history['total'][:range], label='Total Loss', c='red')
         if ib:
-            plt.plot(self.loss_history['ib'][:range], label='IB Loss')
+            plt.plot(self.loss_history['ib'][:range], label='IB Loss', ls='--', alpha=0.8)
         if pde:
-            plt.plot(self.loss_history['pde'][:range], label='PDE Loss')
+            plt.plot(self.loss_history['pde'][:range], label='PDE Loss', ls='--', alpha=0.8)
         if data:
-            plt.plot(self.loss_history['data'][:range], label='Data Loss')
+            plt.plot(self.loss_history['data'][:range], label='Data Loss', ls='--', alpha=0.8)
         plt.xlabel('Epoch')
         plt.ylabel('Loss')
         if log_scale:
