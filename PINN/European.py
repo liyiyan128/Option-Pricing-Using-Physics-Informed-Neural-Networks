@@ -96,13 +96,13 @@ class EuropeanPINN(torch.nn.Module):
     def plot_loss(self, ib=True, pde=True, data=True,
                   range=-1, log_scale=True, title='Loss History', save=False, file_name='loss_history.pdf', figsize=(8, 6), fontsize=14):
         plt.figure(figsize=figsize)
-        plt.plot(self.loss_history['total'][:range], label='Total Loss', c='red')
+        plt.plot(self.loss_history['total'][:range], label='Total loss', c='red')
         if ib:
-            plt.plot(self.loss_history['ib'][:range], label='IB Loss', ls='--', alpha=0.8)
+            plt.plot(self.loss_history['ib'][:range], label='IB loss ($MSE_B$)', ls='--', alpha=0.8)
         if pde:
-            plt.plot(self.loss_history['pde'][:range], label='PDE Loss', ls='--', alpha=0.8)
+            plt.plot(self.loss_history['pde'][:range], label='PDE loss ($MSE_F$)', ls='--', alpha=0.8)
         if data:
-            plt.plot(self.loss_history['data'][:range], label='Data Loss', ls='--', alpha=0.8)
+            plt.plot(self.loss_history['data'][:range], label='Data loss ($MSE_{data}$)', ls='--', alpha=0.8)
         plt.xlabel('Epoch', fontsize=fontsize)
         plt.ylabel('Loss', fontsize=fontsize)
         if log_scale:
