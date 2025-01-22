@@ -17,7 +17,7 @@ def V_BS(S, tau, K, r, sigma, type='put'):
 
 def V_BS_CN(m, n, T, K, sigma, r, S_inf, type='put'):
     """
-    Cranck-Nicolson
+    Cranck-Nicolson V(t, S)
     """
     S = np.linspace(0, S_inf, m+1)
     t = np.linspace(0, T, n+1)
