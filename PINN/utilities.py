@@ -1,3 +1,4 @@
+import torch
 import numpy as np
 import scipy.sparse as sp
 from scipy.stats import norm
@@ -5,6 +6,7 @@ from scipy.stats import norm
 
 def V_BS(S, tau, K, r, sigma, type='put'):
     d1 = (np.log(S/K) + (r + 0.5*sigma**2)*tau)/(sigma*np.sqrt(tau))
+    d1 = np.where(np.isnan(d1), np.inf, d1)
     d2 = d1 - sigma*np.sqrt(tau)
 
     if type == 'put':
@@ -33,7 +35,7 @@ def V_BS_CN(m, n, T, K, sigma, r, S_inf, type='put'):
     elif type == 'call':
         V[0, :] = np.maximum(S - K, 0)
         V[:, 0] = 0
-        V[:, -1] = S_inf
+        V[:, -1] = S_inf - K * np.exp(-r * t)
 
     # construct matrix
     D1 = sp.diags(np.arange(1, m)).tocsc()
