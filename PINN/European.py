@@ -63,11 +63,24 @@ class EuropeanPINN(torch.nn.Module):
     def fit(self, S_ib, tau_ib, V_ib,
             S_pde=None, tau_pde=None,
             S_data=None, tau_data=None, V_data=None,
-            N_pde=2000, resample=False, loss_weights=(1., 1., 1.),
+            N_pde=2000, resample=False, sampling='uniform',
+            loss_weights=(1., 1., 1.),
             epochs=1000, optimizer='adam', verbose=True, **kwargs):
 
-        S_pde = S_pde if S_pde is not None else torch.rand(N_pde, 1, requires_grad=True)*self.S_inf
-        tau_pde = tau_pde if tau_pde is not None else torch.rand(N_pde, 1, requires_grad=True)*self.T
+        if sampling == 'uniform':
+            S_pde = S_pde if S_pde is not None else torch.rand(N_pde, 1, requires_grad=True)*self.S_inf
+            tau_pde = tau_pde if tau_pde is not None else torch.rand(N_pde, 1, requires_grad=True)*self.T
+        elif sampling == 'sobol':
+            sobol = torch.quasirandom.SobolEngine(dimension=2)
+            sobol_samples = sobol.draw(N_pde)
+            S_pde = S_pde if S_pde is not None else sobol_samples[:, 0].reshape(-1, 1)*self.S_inf
+            tau_pde = tau_pde if tau_pde is not None else sobol_samples[:, 1].reshape(-1, 1)*self.T
+            S_pde.requires_grad = True
+            tau_pde.requires_grad = True
+        elif sampling == 'importance':
+            raise NotImplementedError('Importance sampling is not implemented yet.')
+        elif sampling == 'adpative':
+            raise NotImplementedError('Adaptive sampling is not implemented yet.')
     
         S_ib, tau_ib, V_ib, S_pde, tau_pde, S_data, tau_data, V_data = \
             S_ib.to(self.device), tau_ib.to(self.device), V_ib.to(self.device), \
@@ -94,8 +107,19 @@ class EuropeanPINN(torch.nn.Module):
         for i in range(epochs):
 
             if resample and (i+1) % resample == 0:
-                S_pde = torch.rand(N_pde, 1, requires_grad=True)*self.S_inf
-                tau_pde = torch.rand(N_pde, 1, requires_grad=True)*self.T
+                if sampling == 'uniform':
+                    S_pde = torch.rand(N_pde, 1, requires_grad=True)*self.S_inf
+                    tau_pde = torch.rand(N_pde, 1, requires_grad=True)*self.T
+                elif sampling == 'sobol':
+                    sobol_samples = sobol.draw(N_pde, requires_grad=True)
+                    S_pde = sobol_samples[:, 0].reshape(-1, 1)*self.S_inf
+                    tau_pde = sobol_samples[:, 1].reshape(-1, 1)*self.T
+                    S_pde.requires_grad = True
+                    tau_pde.requires_grad = True
+                elif sampling == 'importance':
+                    raise NotImplementedError('Importance sampling is not implemented yet.')
+                elif sampling == 'adpative':
+                    raise NotImplementedError('Adaptive sampling is not implemented yet.')
                 S_pde, tau_pde = S_pde.to(self.device), tau_pde.to(self.device)
 
             self.optimizer.step(closure)
