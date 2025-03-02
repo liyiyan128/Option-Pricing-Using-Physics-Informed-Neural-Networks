@@ -111,7 +111,6 @@ class VanillaOptionPINN(torch.nn.Module):
             V_data.to(self.device) if V_data is not None else None, \
             S_valid.to(self.device) if S_valid is not None else None, \
             tau_valid.to(self.device) if tau_valid is not None else None
-        print(f'On device: {self.device}')
         
         resample = int(resample)
 
@@ -119,7 +118,6 @@ class VanillaOptionPINN(torch.nn.Module):
             self.optimizer = torch.optim.Adam(self.parameters(), **kwargs)
         elif optimizer == 'lbfgs':
             self.optimizer = torch.optim.LBFGS(self.parameters(), **kwargs)   
-        print(f'Optimizer: {optimizer}')
 
         def closure():
             self.optimizer.zero_grad()
@@ -128,7 +126,8 @@ class VanillaOptionPINN(torch.nn.Module):
             loss.backward(retain_graph=True)
             return loss
 
-        # Training loop
+        print(f'Optimizer: {optimizer}')
+        print(f'Device: {self.device}')
         for i in range(epochs):
 
             if resample and (i+1) % resample == 0:
