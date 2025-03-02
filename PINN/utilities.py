@@ -132,7 +132,7 @@ def collocation_points(model, N_pde=2000,
         if S_pde_base is None or tau_pde_base is None:
             # sobol/uniform as base samples for adaptive sampling
             print(f'Use {adaptive_base} as base samples for adaptive sampling')
-            S_pde, tau_pde = collocation_points(N_pde, model, sampling=adaptive_base, sobol=sobol, **kwargs)
+            S_pde, tau_pde = collocation_points(model, N_pde, sampling=adaptive_base, sobol=sobol, **kwargs)
         else:
             S_eval = torch.linspace(0, model.S_inf, grid[1])
             tau_eval = torch.linspace(0, model.T, grid[0])
