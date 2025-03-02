@@ -91,7 +91,7 @@ class VanillaOptionPINN(torch.nn.Module):
 
         if tau_pde is None or S_pde is None:
             # initialise sobol engine for sobol/adaptive sampling
-            print(f'Sampling collocation points ({sampling})')
+            print(f'No collocation points provided\nSampling {N_pde} collocation points ({sampling})')
             sobol = torch.quasirandom.SobolEngine(dimension=2) if (sampling == 'sobol' or sampling == 'adaptive') else None
             tau_pde, S_pde = collocation_points(self, N_pde, sampling=sampling, sobol=sobol, **kwargs)
 
@@ -119,6 +119,7 @@ class VanillaOptionPINN(torch.nn.Module):
             self.optimizer = torch.optim.Adam(self.parameters(), **kwargs)
         elif optimizer == 'lbfgs':
             self.optimizer = torch.optim.LBFGS(self.parameters(), **kwargs)   
+        print(f'Optimizer: {optimizer}')
 
         def closure():
             self.optimizer.zero_grad()
@@ -131,7 +132,6 @@ class VanillaOptionPINN(torch.nn.Module):
         for i in range(epochs):
 
             if resample and (i+1) % resample == 0:
-                print(f'Resampling collocation points ({sampling})')
                 S_pde_base = S_pde.clone() if sampling == 'adaptive' else None
                 tau_pde_base = tau_pde.clone() if sampling == 'adaptive' else None
                 tau_pde, S_pde = collocation_points(self, N_pde, sampling=sampling, sobol=sobol,
