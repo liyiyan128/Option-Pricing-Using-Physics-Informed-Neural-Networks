@@ -98,6 +98,8 @@ def train(i, seed):
     S_eval = torch.linspace(0, S_inf, 1000)
     tau_eval = torch.linspace(0, T, 1000)
     S_eval, tau_eval = torch.meshgrid(S_eval, tau_eval, indexing='xy')
+    S_eval.requires_grad = True
+    tau_eval.requires_grad = True
     V_pred = model(tau_eval.reshape(-1, 1), S_eval.reshape(-1, 1)).detach().cpu().numpy().reshape(1000, 1000)
 
     S_eval_np, tau_eval_np = np.meshgrid(np.linspace(0, S_inf, 1000), np.linspace(0, T, 1000))
