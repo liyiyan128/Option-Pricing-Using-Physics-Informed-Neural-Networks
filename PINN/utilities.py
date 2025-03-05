@@ -6,6 +6,9 @@ from scipy.ndimage import gaussian_filter
 
 
 def V_BS(tau, S, K, r, sigma, type='put'):
+    import warnings
+    warnings.filterwarnings("ignore", category=RuntimeWarning)
+
     type = type.lower()
 
     d1 = (np.log(S/K) + (r + 0.5*sigma**2)*tau)/(sigma*np.sqrt(tau))
@@ -20,7 +23,8 @@ def V_BS(tau, S, K, r, sigma, type='put'):
     return res
 
 
-def V_BS_CN(m, n,  K, T,  r, sigma, S_inf, type='put', style='european'):
+def V_BS_CN(m, n,  K, T,  r, sigma, S_inf,
+            type='put', style='european'):
     """
     Cranck-Nicolson V(t, S)
     """
@@ -71,6 +75,52 @@ def V_BS_CN(m, n,  K, T,  r, sigma, S_inf, type='put', style='european'):
         V[i+1, 1:-1] = V_next
 
     return V, S, t
+
+
+def european_option_greeks(tau, S, K, r, sigma, greeks='delta', type='put'):
+    import warnings
+    warnings.filterwarnings("ignore", category=RuntimeWarning)
+
+    greeks = greeks.lower()
+    type = type.lower()
+
+    d1 = (np.log(S/K) + (r + 0.5*sigma**2)*tau)/(sigma*np.sqrt(tau))
+    d1 = np.where(np.isnan(d1), np.inf, d1)
+    d2 = d1 - sigma*np.sqrt(tau)
+
+    if greeks == 'delta':
+        if type == 'put':
+            delta = -norm.cdf(-d1)
+        elif type == 'call':
+            delta = norm.cdf(d1)
+        return delta
+    elif greeks == 'vega':
+        vega = K*np.exp(-r*tau)*norm.pdf(d2)*np.sqrt(tau)
+        return vega
+    elif greeks == 'theta' or greeks == 'time_decay':
+        if type == 'put':
+            theta = -S*norm.pdf(d1)*sigma/(2*np.sqrt(tau)) + r*K*np.exp(-r*tau)*norm.cdf(-d2)
+        elif type == 'call':
+            theta = -S*norm.pdf(d1)*sigma/(2*np.sqrt(tau)) - r*K*np.exp(-r*tau)*norm.cdf(d2)
+        return theta
+    elif greeks == 'rho':
+        if type == 'put':
+            rho = -K*tau*np.exp(-r*tau)*norm.cdf(-d2)
+        elif type == 'call':
+            rho = K*tau*np.exp(-r*tau)*norm.cdf(d2)
+        return rho
+    elif greeks == 'gamma':
+        gamma = norm.pdf(d1)/(S*sigma*np.sqrt(tau))
+        return gamma
+    elif greeks == 'charm' or greeks == 'delta_decay':
+        charm = -norm.pdf(d1)*((2*r*np.sqrt(tau) - d2*sigma*np.sqrt(tau))/(2*tau*sigma*np.sqrt(tau)))
+        return charm
+    elif greeks == 'speed':
+        speed = -norm.pdf(d1)/(S**2*sigma*np.sqrt(tau))*(d1/(sigma*np.sqrt(tau)) + 1)
+        return speed
+    elif greeks == 'color' or greeks == 'gamma_decay':
+        color = -norm.pdf(d1)/(2*S*tau*sigma*np.sqrt(tau))*(1 + d1*(2*r*tau-d2*sigma*np.sqrt(tau))/(sigma*np.sqrt(tau)))
+        return color
 
 
 def collocation_points(model, N_pde=2000,
@@ -132,7 +182,7 @@ def collocation_points(model, N_pde=2000,
         if S_pde_base is None or tau_pde_base is None:
             # sobol/uniform as base samples for adaptive sampling
             print(f'Use {adaptive_base} as base samples for adaptive sampling')
-            S_pde, tau_pde = collocation_points(model, N_pde, sampling=adaptive_base, sobol=sobol, **kwargs)
+            tau_pde, S_pde = collocation_points(model, N_pde, sampling=adaptive_base, sobol=sobol, **kwargs)
         else:
             S_eval = torch.linspace(0, model.S_inf, grid[1])
             tau_eval = torch.linspace(0, model.T, grid[0])
@@ -144,20 +194,24 @@ def collocation_points(model, N_pde=2000,
             sigma_scott = pde_err_abs.std() * pde_err_abs.size ** (-1/6)
             # Apply Gaussian filter
             pde_err_abs = gaussian_filter(pde_err_abs, sigma=sigma_scott)
-            # remove nan
-            pde_err_abs = np.where(np.isnan(pde_err_abs), 0, pde_err_abs)
+            pde_err_abs = np.where(np.isnan(pde_err_abs), 0, pde_err_abs)  # remove nan
 
             # sample from pde_err_abs
             n_samples = int(0.75*N_pde)
             probs = pde_err_abs.flatten() / pde_err_abs.flatten().sum()
-            idx = np.random.choice(grid[0]*grid[1], size=n_samples, p=probs)
-            S_pde_resample = S_eval.flatten()[idx].reshape(-1, 1)
-            tau_pde_resample = tau_eval.flatten()[idx].reshape(-1, 1)
+            probs = np.where(np.isnan(probs), 0, probs)  # remove nan
+            if np.all(probs == 0):
+                print(f'Zero probabilities, resample using {sampling}')
+                tau_pde, S_pde = collocation_points(model, N_pde, sampling=adaptive_base, sobol=sobol, **kwargs)
+            else:
+                idx = np.random.choice(grid[0]*grid[1], size=n_samples, p=probs)
+                S_pde_resample = S_eval.flatten()[idx].reshape(-1, 1)
+                tau_pde_resample = tau_eval.flatten()[idx].reshape(-1, 1)
 
-            # Maintain original data size
-            idx = np.random.choice(N_pde, size=N_pde - n_samples, replace=False)
-            S_pde = torch.cat([S_pde_resample, S_pde_base[idx]])
-            tau_pde = torch.cat([tau_pde_resample, tau_pde_base[idx]])
+                # Maintain original data size
+                idx = np.random.choice(N_pde, size=N_pde - n_samples, replace=False)
+                S_pde = torch.cat([S_pde_resample, S_pde_base[idx]])
+                tau_pde = torch.cat([tau_pde_resample, tau_pde_base[idx]])
 
     S_pde = S_pde.detach().requires_grad_(True)
     tau_pde = tau_pde.detach().requires_grad_(True)

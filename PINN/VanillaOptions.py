@@ -91,7 +91,8 @@ class VanillaOptionPINN(torch.nn.Module):
 
         if tau_pde is None or S_pde is None:
             # initialise sobol engine for sobol/adaptive sampling
-            print(f'No collocation points provided\nSampling {N_pde} collocation points ({sampling})')
+            if verbose:
+                print(f'No collocation points provided\nSampling {N_pde} collocation points ({sampling})')
             sobol = torch.quasirandom.SobolEngine(dimension=2) if (sampling == 'sobol' or sampling == 'adaptive') else None
             tau_pde, S_pde = collocation_points(self, N_pde, sampling=sampling, sobol=sobol, **kwargs)
 
@@ -113,6 +114,7 @@ class VanillaOptionPINN(torch.nn.Module):
             tau_valid.to(self.device) if tau_valid is not None else None
         
         resample = int(resample)
+        verbose = int(verbose)
 
         if optimizer == 'adam':
             self.optimizer = torch.optim.Adam(self.parameters(), **kwargs)
@@ -126,8 +128,9 @@ class VanillaOptionPINN(torch.nn.Module):
             loss.backward(retain_graph=True)
             return loss
 
-        print(f'Optimizer: {optimizer}')
-        print(f'Device: {self.device}')
+        if verbose:
+            print(f'Device: {self.device}')
+            print(f'Optimizer: {optimizer}')
         for i in range(epochs):
 
             if resample and (i+1) % resample == 0:
@@ -149,7 +152,7 @@ class VanillaOptionPINN(torch.nn.Module):
             if valid:
                 loss_valid = self.loss_pde(tau_valid, S_valid).detach().item()
                 self.loss_history['valid'].append(loss_valid)
-            if verbose and (i+1) % 100 == 0:
+            if verbose and (i+1) % verbose == 0:
                 print(f'Epoch {i+1}/{epochs}    |    Loss: {total}')
 
     def plot_history(self, ib=True, pde=True, data=True, valid=True, range=-1, log_scale=True,
@@ -175,3 +178,54 @@ class VanillaOptionPINN(torch.nn.Module):
         if save:
             plt.savefig(file_name, bbox_inches='tight')
         plt.show()
+
+    def evaluate_greeks(self, tau, S, greeks='delta'):
+        greeks = greeks.lower()
+
+        V = self.forward(tau, S)
+
+        if greeks == 'delta':
+            V_S = torch.autograd.grad(V, S, grad_outputs=torch.ones_like(V),
+                                      create_graph=True, retain_graph=True, allow_unused=True)[0]
+            delta = V_S
+            return delta
+        elif greeks == 'theta' or greeks == 'time_decay':
+            V_tau = torch.autograd.grad(V, tau, grad_outputs=torch.ones_like(V),
+                                        create_graph=True, retain_graph=True, allow_unused=True)[0]
+            theta = -V_tau
+            return theta
+        elif greeks == 'gamma':
+            V_S = torch.autograd.grad(V, S, grad_outputs=torch.ones_like(V),
+                                      create_graph=True, retain_graph=True, allow_unused=True)[0]
+            V_SS = torch.autograd.grad(V_S, S, grad_outputs=torch.ones_like(V_S),
+                                       create_graph=True, retain_graph=True, allow_unused=True)[0]
+            gamma = V_SS
+            return gamma
+        elif greeks == 'charm' or greeks == 'delta_decay':
+            # charm = -dDelta/dtau = dTheta/dS = -d^2V/dtaudS
+            V_S = torch.autograd.grad(V, S, grad_outputs=torch.ones_like(V),
+                                      create_graph=True, retain_graph=True, allow_unused=True)[0]
+            V_S_tau = torch.autograd.grad(V_S, tau, grad_outputs=torch.ones_like(V_S),
+                                          create_graph=True, retain_graph=True, allow_unused=True)[0]
+            charm = -V_S_tau
+            return charm
+        elif greeks == 'speed':
+            # speed = dGamma/dS = d^3V/dS^2
+            V_S = torch.autograd.grad(V, S, grad_outputs=torch.ones_like(V),
+                                      create_graph=True, retain_graph=True, allow_unused=True)[0]
+            V_SS = torch.autograd.grad(V_S, S, grad_outputs=torch.ones_like(V_S),
+                                       create_graph=True, retain_graph=True, allow_unused=True)[0]
+            V_SSS = torch.autograd.grad(V_SS, S, grad_outputs=torch.ones_like(V_SS),
+                                        create_graph=True, retain_graph=True, allow_unused=True)[0]
+            speed = V_SSS
+            return speed
+        elif greeks == 'color' or greeks == 'gamma_decay':
+            # color = dGamma/dtau = d^3V/dS^2dtau
+            V_S = torch.autograd.grad(V, S, grad_outputs=torch.ones_like(V),
+                                      create_graph=True, retain_graph=True, allow_unused=True)[0]
+            V_SS = torch.autograd.grad(V_S, S, grad_outputs=torch.ones_like(V_S),
+                                       create_graph=True, retain_graph=True, allow_unused=True)[0]
+            V_SS_tau = torch.autograd.grad(V_SS, tau, grad_outputs=torch.ones_like(V_SS),
+                                          create_graph=True, retain_graph=True, allow_unused=True)[0]
+            color = V_SS_tau
+            return color
