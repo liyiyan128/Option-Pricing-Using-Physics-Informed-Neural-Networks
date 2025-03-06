@@ -6,14 +6,14 @@ from scipy.ndimage import gaussian_filter
 
 
 def V_BS(tau, S, K, r, sigma, type='put'):
-    import warnings
-    warnings.filterwarnings("ignore", category=RuntimeWarning)
-
     type = type.lower()
 
+    epsilon = max(np.finfo(float).eps, 1e-16)
+    tau = np.where(tau < epsilon, epsilon, tau)
+    S = np.where(S < epsilon, epsilon, S)
+
     d1 = (np.log(S/K) + (r + 0.5*sigma**2)*tau)/(sigma*np.sqrt(tau))
-    d1 = np.where(np.isnan(d1), np.inf, d1)
-    d2 = d1 - sigma*np.sqrt(tau)
+    d2 = (np.log(S/K) + (r - 0.5*sigma**2)*tau)/(sigma*np.sqrt(tau))
 
     if type == 'put':
         res = K*np.exp(-r*tau)*norm.cdf(-d2) - S*norm.cdf(-d1)
@@ -78,49 +78,56 @@ def V_BS_CN(m, n,  K, T,  r, sigma, S_inf,
 
 
 def european_option_greeks(tau, S, K, r, sigma, greeks='delta', type='put'):
-    import warnings
-    warnings.filterwarnings("ignore", category=RuntimeWarning)
-
     greeks = greeks.lower()
     type = type.lower()
 
+    epsilon = max(np.finfo(float).eps, 1e-16)
+    tau = np.where(tau < epsilon, epsilon, tau)
+    S = np.where(S < epsilon, epsilon, S)
+
     d1 = (np.log(S/K) + (r + 0.5*sigma**2)*tau)/(sigma*np.sqrt(tau))
-    d1 = np.where(np.isnan(d1), np.inf, d1)
-    d2 = d1 - sigma*np.sqrt(tau)
+    d2 = (np.log(S/K) + (r - 0.5*sigma**2)*tau)/(sigma*np.sqrt(tau))
 
     if greeks == 'delta':
         if type == 'put':
             delta = -norm.cdf(-d1)
         elif type == 'call':
             delta = norm.cdf(d1)
-        return delta
+        res = delta
     elif greeks == 'vega':
         vega = K*np.exp(-r*tau)*norm.pdf(d2)*np.sqrt(tau)
-        return vega
+        res = vega
     elif greeks == 'theta' or greeks == 'time_decay':
         if type == 'put':
             theta = -S*norm.pdf(d1)*sigma/(2*np.sqrt(tau)) + r*K*np.exp(-r*tau)*norm.cdf(-d2)
         elif type == 'call':
             theta = -S*norm.pdf(d1)*sigma/(2*np.sqrt(tau)) - r*K*np.exp(-r*tau)*norm.cdf(d2)
-        return theta
+        res = theta
     elif greeks == 'rho':
         if type == 'put':
             rho = -K*tau*np.exp(-r*tau)*norm.cdf(-d2)
         elif type == 'call':
             rho = K*tau*np.exp(-r*tau)*norm.cdf(d2)
-        return rho
+        res = rho
     elif greeks == 'gamma':
         gamma = norm.pdf(d1)/(S*sigma*np.sqrt(tau))
-        return gamma
+        res = gamma
     elif greeks == 'charm' or greeks == 'delta_decay':
         charm = -norm.pdf(d1)*((2*r*np.sqrt(tau) - d2*sigma*np.sqrt(tau))/(2*tau*sigma*np.sqrt(tau)))
-        return charm
+        res = charm
     elif greeks == 'speed':
         speed = -norm.pdf(d1)/(S**2*sigma*np.sqrt(tau))*(d1/(sigma*np.sqrt(tau)) + 1)
-        return speed
+        res = speed
     elif greeks == 'color' or greeks == 'gamma_decay':
         color = -norm.pdf(d1)/(2*S*tau*sigma*np.sqrt(tau))*(1 + d1*(2*r*tau-d2*sigma*np.sqrt(tau))/(sigma*np.sqrt(tau)))
-        return color
+        res = color
+
+    if np.isnan(res).any():
+        # print corresponding tau and S of fisrt nan
+        idx = np.where(np.isnan(res))[0][0]
+        print(f'NaN in {greeks} at tau={tau[idx]}, S={S[idx]}')
+        raise ValueError(f'NaN in {greeks}')
+    return res
 
 
 def collocation_points(model, N_pde=2000,
@@ -216,3 +223,21 @@ def collocation_points(model, N_pde=2000,
     S_pde = S_pde.detach().requires_grad_(True)
     tau_pde = tau_pde.detach().requires_grad_(True)
     return tau_pde, S_pde
+
+
+if __name__ == '__main__':
+    # parameters
+    K = 4
+    sigma = 0.3
+    r = 0.03
+    T = 1
+    S_inf = 3 * K
+
+    # test european_option_greeks numerical stability
+    S_eval_np = np.linspace(0, S_inf, 1000)
+    tau_eval_np = np.linspace(0, T, 1000)
+    S_eval_np, tau_eval_np = np.meshgrid(S_eval_np, tau_eval_np)
+
+    greeks = ['Delta', 'Theta', 'Gamma', 'Charm', 'Speed', 'Color']
+    for greek in greeks:
+        greek_true = european_option_greeks(tau_eval_np, S_eval_np, K, r, sigma, greek, 'put')
