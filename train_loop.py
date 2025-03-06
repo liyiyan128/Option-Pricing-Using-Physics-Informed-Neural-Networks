@@ -48,11 +48,12 @@ SEEDS = np.random.randint(0, 1000, N_RUNS)
 greeks = ['Delta', 'Theta', 'Gamma', 'Charm', 'Speed', 'Color']
 results = {
     'RMSE': np.zeros(N_RUNS),
-    'max_pointwise_error': np.zeros(N_RUNS),
+    'MPE': np.zeros(N_RUNS),
+    'GREEKS': greeks,
     'SEEDS': SEEDS
 }
 results.update({'RMSE_' + greek: np.zeros(N_RUNS) for greek in greeks})
-results.update({'max_pointwise_error_' + greek: np.zeros(N_RUNS) for greek in greeks})
+results.update({'MPE_' + greek: np.zeros(N_RUNS) for greek in greeks})
 
 ib = torch.load(IB_DATA_PATH)
 S_ib, tau_ib, V_ib = ib['S'], ib['tau'], ib['V']
@@ -106,28 +107,28 @@ def train(i, seed):
     V_true = V_BS(tau_eval_np, S_eval_np, K, r, sigma, TYPE)
     V_err = V_pred - V_true
     RMSE = np.sqrt(np.mean(V_err**2))
-    max_pointwise_error = np.max(np.abs(V_err))
+    MPE = np.max(np.abs(V_err))
 
     RMSE_greeks = {}
-    max_pointwise_error_greeks = {}
+    MPE_greeks = {}
     for greek in greeks:
         greek_pred = model.evaluate_greeks(tau_eval.reshape(-1, 1), S_eval.reshape(-1, 1), greek).detach().cpu().numpy().reshape(1000, 1000)
         greek_true = european_option_greeks(tau_eval_np, S_eval_np, K, r, sigma, greek, TYPE)
         greek_err = greek_pred - greek_true
         RMSE_greeks[greek] = np.sqrt(np.mean(greek_err**2))
-        max_pointwise_error_greeks[greek] = np.max(np.abs(greek_err))
+        MPE_greeks[greek] = np.max(np.abs(greek_err))
 
     print(f'Training Run {i}    |    RMSE: {RMSE}')
 
-    return RMSE, max_pointwise_error, RMSE_greeks, max_pointwise_error_greeks
+    return RMSE, MPE, RMSE_greeks, MPE_greeks
 
 parallel_results = Parallel(n_jobs=-1)(delayed(train)(i, SEEDS[i]) for i in tqdm(range(N_RUNS), desc='Training Progress'))
 
 for i, (rmse, mpe, rmse_greeks, mpe_greeks) in enumerate(parallel_results):
     results['RMSE'][i] = rmse
-    results['max_pointwise_error'][i] = mpe
+    results['MPE'][i] = mpe
     for greek in greeks:
         results['RMSE_' + greek][i] = rmse_greeks[greek]
-        results['max_pointwise_error_' + greek][i] = mpe_greeks[greek]
+        results['MPE_' + greek][i] = mpe_greeks[greek]
 
 np.save(OUTPUT_PATH + FILE_NAME, results)
