@@ -23,8 +23,9 @@ warnings.filterwarnings("ignore")
 
 parser = argparse.ArgumentParser(description='Run PINN training with parallelisation.')
 parser.add_argument('--n_runs', type=int, default=100, help='Number of runs')
+parser.add_argument('--n_jobs', type=int, default=-1, help='Number of jobs for parallelisation')
 parser.add_argument('--save_model', type=bool, default=True, help='Save model flag')
-parser.add_argument('--model_path', type=str, default='./models/european_put/', help='Path to save models')
+parser.add_argument('--model_path', type=str, default='./models/', help='Path to save models')
 parser.add_argument('--ib_data_path', type=str, default='./data/european_put_ib_sobol.pt', help='Path to input boundary data')
 parser.add_argument('--output_path', type=str, default='./data/output/', help='Path to save results')
 parser.add_argument('--file_name', type=str, default='results.npy', help='Output file name')
@@ -64,6 +65,8 @@ def train(i, seed):
     np.random.seed(seed)
     # --------
     # PINN ARCHITECTURE
+
+    # 2mlp20tanh
     nn = torch.nn.Sequential(
             torch.nn.Linear(2, 20),
             torch.nn.Tanh(),
@@ -71,6 +74,15 @@ def train(i, seed):
             torch.nn.Tanh(),
             torch.nn.Linear(20, 1)
     )
+
+    # # 2mlp20silu
+    # nn = torch.nn.Sequential(
+    #         torch.nn.Linear(2, 20),
+    #         torch.nn.SiLU(),
+    #         torch.nn.Linear(20, 20),
+    #         torch.nn.SiLU(),
+    #         torch.nn.Linear(20, 1)
+    # )
     # --------
     model = VanillaOptionPINN(nn, K, T, r, sigma, S_inf,
                               type=TYPE, style=STYLE,
@@ -122,7 +134,7 @@ def train(i, seed):
 
     return RMSE, MPE, RMSE_greeks, MPE_greeks
 
-parallel_results = Parallel(n_jobs=-1)(delayed(train)(i, SEEDS[i]) for i in tqdm(range(N_RUNS), desc='Training Progress'))
+parallel_results = Parallel(n_jobs=n_jobs)(delayed(train)(i, SEEDS[i]) for i in tqdm(range(N_RUNS), desc='Training Progress'))
 
 for i, (rmse, mpe, rmse_greeks, mpe_greeks) in enumerate(parallel_results):
     results['RMSE'][i] = rmse
