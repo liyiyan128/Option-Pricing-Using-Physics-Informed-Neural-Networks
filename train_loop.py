@@ -15,15 +15,19 @@ K = 4
 sigma = 0.3
 r = 0.03
 T = 1
+
+# TRAINING PARAMETERS
 S_inf = 3 * K
 N_pde = 2500
+SAMPLING = 'sobol'
+RESAMPLE = 0
 # --------
 
 warnings.filterwarnings("ignore")
 
 parser = argparse.ArgumentParser(description='Run PINN training with parallelisation.')
 parser.add_argument('--n_runs', type=int, default=100, help='Number of runs')
-parser.add_argument('--n_jobs', type=int, default=-1, help='Number of jobs for parallelisation')
+parser.add_argument('--n_jobs', type=int, default=3, help='Number of jobs for parallelisation')
 parser.add_argument('--save_model', type=bool, default=True, help='Save model flag')
 parser.add_argument('--model_path', type=str, default='./models/', help='Path to save models')
 parser.add_argument('--ib_data_path', type=str, default='./data/european_put_ib_sobol.pt', help='Path to input boundary data')
@@ -35,6 +39,7 @@ parser.add_argument('--lr', type=float, default=0.005, help='Learning rate for A
 args = parser.parse_args()
 
 N_RUNS = args.n_runs
+N_JOBS = args.n_jobs
 SAVE_MODEL = args.save_model
 MODEL_PATH = args.model_path
 IB_DATA_PATH = args.ib_data_path
@@ -75,14 +80,6 @@ def train(i, seed):
             torch.nn.Linear(20, 1)
     )
 
-    # # 2mlp20silu
-    # nn = torch.nn.Sequential(
-    #         torch.nn.Linear(2, 20),
-    #         torch.nn.SiLU(),
-    #         torch.nn.Linear(20, 20),
-    #         torch.nn.SiLU(),
-    #         torch.nn.Linear(20, 1)
-    # )
     # --------
     model = VanillaOptionPINN(nn, K, T, r, sigma, S_inf,
                               type=TYPE, style=STYLE,
@@ -92,16 +89,16 @@ def train(i, seed):
     model.fit(tau_ib, S_ib, V_ib,
               tau_pde=None, S_pde=None,
               valid=False,
-              N_pde=N_pde, sampling='sobol', resample=0,
+              N_pde=N_pde, sampling=SAMPLING, resample=RESAMPLE,
               loss_weights=loss_weights,
-              epochs=200, verbose=False,
-              optimizer='adam', lr=0.005)
+              epochs=EPOCHS_ADAM, verbose=False,
+              optimizer='adam', lr=LR)
     model.fit(tau_ib, S_ib, V_ib,
               tau_pde=None, S_pde=None,
               valid=False,
-              N_pde=N_pde, sampling='sobol', resample=0,
+              N_pde=N_pde, sampling=SAMPLING, resample=RESAMPLE,
               loss_weights=loss_weights,
-              epochs=300, verbose=False,
+              epochs=EPOCHS_LBFGS, verbose=False,
               optimizer='lbfgs', line_search_fn='strong_wolfe')
 
     if SAVE_MODEL:
@@ -134,7 +131,7 @@ def train(i, seed):
 
     return RMSE, MPE, RMSE_greeks, MPE_greeks
 
-parallel_results = Parallel(n_jobs=n_jobs)(delayed(train)(i, SEEDS[i]) for i in tqdm(range(N_RUNS), desc='Training Progress'))
+parallel_results = Parallel(n_jobs=N_JOBS)(delayed(train)(i, SEEDS[i]) for i in tqdm(range(N_RUNS), desc='Training Progress'))
 
 for i, (rmse, mpe, rmse_greeks, mpe_greeks) in enumerate(parallel_results):
     results['RMSE'][i] = rmse
