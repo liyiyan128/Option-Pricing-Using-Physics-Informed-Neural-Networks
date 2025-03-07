@@ -3,6 +3,7 @@ import numpy as np
 import scipy.sparse as sp
 from scipy.stats import norm
 from scipy.ndimage import gaussian_filter
+import QuantLib as ql
 
 
 def V_BS(tau, S, K, r, sigma, type='put'):
@@ -75,6 +76,76 @@ def V_BS_CN(m, n,  K, T,  r, sigma, S_inf,
         V[i+1, 1:-1] = V_next
 
     return V, S, t
+
+
+def V_quantlib(tau, S, K, T, r, sigma, q=0,
+               type='put', style='american',
+               model='black_scholes', method=None, **kwargs):
+    t = T - tau
+    t, S = np.meshgrid(t, S)
+    shape = t.shape
+    t = t.flatten()
+    S = S.flatten()
+    u = ql.SimpleQuote(S[0])
+    r = ql.SimpleQuote(r)
+    sigma = ql.SimpleQuote(sigma)
+    type = type.lower()
+    style = style.lower()
+    model = model.lower()
+    if method is None:
+        method = 'bs' if style == 'european' else 'crr'
+    else:
+        method = method.lower()
+
+    calendar = kwargs.get('calendar', ql.NullCalendar())
+    dayCounter = kwargs.get('dayCounter', ql.Actual365Fixed())
+    today = ql.Date(1, 1, 2025)  # ql.Date.todaysDate()
+    expiry = today + int(T * 365)
+    ql.Settings.instance().evaluationDate = today + int(t[0] * 365)
+
+    option_type = ql.Option.Put if type == 'put' else ql.Option.Call
+    payoff = ql.PlainVanillaPayoff(option_type, K)
+    exercise = ql.EuropeanExercise(expiry) if style == 'european' else \
+               ql.AmericanExercise(today, expiry)
+    option = ql.VanillaOption(payoff, exercise)
+
+    spotHandle = ql.QuoteHandle(u)
+    if model in ['black_scholes', 'bs']:
+        riskFreeCurve = ql.FlatForward(0, calendar, ql.QuoteHandle(r), dayCounter)
+        riskFreeTS = ql.YieldTermStructureHandle(riskFreeCurve)
+        volCurve = ql.BlackConstantVol(0, calendar, ql.QuoteHandle(sigma), dayCounter)
+        volTS = ql.BlackVolTermStructureHandle(volCurve)
+        if q == 0:
+            process = ql.BlackScholesProcess(spotHandle, riskFreeTS, volTS)
+        else:
+            dividendCurve = ql.FlatForward(0, calendar, ql.QuoteHandle(r), dayCounter)
+            dividendTS = ql.YieldTermStructureHandle(dividendCurve)
+            process = ql.BlackScholesMertonProcess(spotHandle, dividendTS, riskFreeTS, volTS)
+            
+    if method in ['bs', 'black_scholes', 'analytic']:
+        engine = ql.AnalyticEuropeanEngine(process)
+    elif method in ['crr', 'binomial', 'tree', 'binomial_tree']:
+        steps = kwargs.get('steps', 200)
+        engine = ql.BinomialVanillaEngine(process, 'crr', steps)
+    elif method in ['mc', 'monte_carlo']:
+        timeSteps = kwargs.get('timeSteps', 20)
+        requiredSamples = kwargs.get('requiredSamples', 250000)
+        if style == 'american':
+            engine = ql.MCAmericanEngine(process, #'PseudoRandom', 
+                                         timeSteps=timeSteps,
+                                         requiredSamples=requiredSamples)
+        elif style == 'european':
+            engine = ql.MCEuropeanEngine(process, #"PseudoRandom",
+                                         timeSteps=timeSteps,
+                                         requiredSamples=requiredSamples)
+    
+    option.setPricingEngine(engine)
+    V = np.zeros_like(t)
+    for i in range(len(t)):
+        ql.Settings.instance().evaluationDate = today + int(t[i] * 365)
+        u.setValue(S[i])
+        V[i] = option.NPV()
+    return V.reshape(shape), (T-t).reshape(shape), S.reshape(shape)
 
 
 def european_option_greeks(tau, S, K, r, sigma, greeks='delta', type='put'):
