@@ -5,6 +5,34 @@ from PINN.utilities import collocation_points
 
 
 class VanillaOptionPINN(torch.nn.Module):
+    """
+    Physics-Informed Neural Network (PINN) for pricing vanilla options.
+
+    Price European or American options using a neural network to approximate
+    the option value function V(tau, S) satisfying the Black-Scholes PDE.
+
+    Parameters
+    ----------
+    nn : torch.nn.Module
+        Neural network architecture V(tau, S) for approximating the option value function.
+    K : float
+        Strike price of the option.
+    T : float
+        Expiry time of the option.
+    r : float
+        Risk-free interest rate.
+    sigma : float
+        Volatility of the underlying asset.
+    S_inf : float, optional
+        Upper bound of the underlying asset price. Default is 3*K.
+    type : str, optional
+        Type of option ('call' or 'put'). Default is 'put'.
+    style : str, optional
+        Style of option ('european' or 'american'). Default is 'european'.
+    device : str or torch.device, optional
+        Device to run the model on. Default is 'cpu'.
+    """
+
     def __init__(self, nn, K, T, r, sigma, S_inf=None,
                  type='put', style='european',
                  device=None):
@@ -32,6 +60,10 @@ class VanillaOptionPINN(torch.nn.Module):
         return V
 
     def pde_nn(self, tau, S):
+        """Compute the Black-Scholes PDE residual.
+
+        (For American options, the PDE residual is the linear complementarity condition.)
+        """
         V = self.forward(tau, S)
         V_tau = torch.autograd.grad(V, tau, grad_outputs=torch.ones_like(V),
                                     create_graph=True, retain_graph=True, allow_unused=True)[0]
@@ -50,11 +82,13 @@ class VanillaOptionPINN(torch.nn.Module):
             return torch.min(pde, V-intrinsic)  # linear complementarity condition
 
     def loss_ib(self, tau, S, V):
+        """Compute the initial/boundary condition loss."""
         if tau is None:
             return torch.tensor(0.)
         return torch.mean((self.forward(tau, S) - V)**2)
 
     def loss_pde(self, tau, S):
+        """Compute the PDE loss."""
         if tau is None:
             return torch.tensor(0.)
         pde = self.pde_nn(tau, S)
@@ -63,6 +97,7 @@ class VanillaOptionPINN(torch.nn.Module):
         return torch.mean(self.pde_nn(tau, S)**2)
 
     def loss_data(self, tau, S, V):
+        """Compute the data loss."""
         if tau is None:
             return torch.tensor(0.)
         return torch.mean((self.forward(tau, S) - V)**2)
@@ -72,6 +107,7 @@ class VanillaOptionPINN(torch.nn.Module):
              tau_pde=None, S_pde=None,
              tau_data=None, S_data=None, V_data=None,
              return_tensor=True):
+        """Compute the weighted total loss."""
         if return_tensor:
             return self.loss_ib(tau_ib, S_ib, V_ib), self.loss_pde(tau_pde, S_pde), self.loss_data(tau_data, S_data, V_data)
         else:
@@ -88,6 +124,37 @@ class VanillaOptionPINN(torch.nn.Module):
             N_pde=2000, sampling='sobol', resample=False,
             loss_weights=(1., 1., 1.),
             epochs=200, optimizer='adam', verbose=True, **kwargs):
+        """Train the model.
+
+        Parameters
+        ----------
+        tau_ib, S_ib, V_ib : torch.Tensor
+            Initial/boundary data points.
+        tau_pde, S_pde : torch.Tensor, optional
+            Collocation points for the PDE residual. Default is None.
+            If None, collocation points are sampled using the specified method.
+        tau_data, S_data, V_data : torch.Tensor, optional
+            Obversed data points. Default is None.
+        valid, valid_grid, tau_valid, S_valid : bool, tuple, torch.Tensor, torch.Tensor, optional
+            If valid is True, validate the model using the given validation data.
+            If tau_valid and S_valid are None, a grid of size valid_grid is used as validation data.
+        N_pde : int, optional
+            Number of collocation points for the PDE residual. Default is 2000.
+        sampling : str, optional
+            Collocation point sampling method. Default is 'sobol'.
+        resample : bool, optional
+            Resample collocation points every resample epochs. Default is False.
+        loss_weights : tuple, optional
+            Weights for the IB, PDE, and data losses. Default is (1., 1., 1.).
+        epochs : int, optional
+            Number of training epochs. Default is 200.
+        optimizer : str, optional
+            Optimizer for training. Default is 'adam'.
+        verbose : bool, optional
+            Print training progress. Default is True.
+        **kwargs
+            Additional keyword arguments for the optimizer.
+        """
 
         if tau_pde is None or S_pde is None:
             # initialise sobol engine for sobol/adaptive sampling
@@ -158,6 +225,7 @@ class VanillaOptionPINN(torch.nn.Module):
     def plot_history(self, ib=True, pde=True, data=True, valid=True, range=-1, log_scale=True,
                   title='Loss History', figsize=(10, 8), fontsize=16,
                   save=False, file_name='loss_history.pdf'):
+        """Plot the loss history."""
         plt.figure(figsize=figsize)
         plt.plot(self.loss_history['total'][:range], label='Total loss', c='red')
         if ib:
@@ -180,6 +248,10 @@ class VanillaOptionPINN(torch.nn.Module):
         plt.show()
 
     def evaluate_greeks(self, tau, S, greeks='delta'):
+        """Compute the option greeks.
+        
+        Supported greeks: 'delta', 'theta', 'gamma', 'charm', 'speed', 'color'.
+        """
         greeks = greeks.lower()
 
         V = self.forward(tau, S)
@@ -226,6 +298,6 @@ class VanillaOptionPINN(torch.nn.Module):
             V_SS = torch.autograd.grad(V_S, S, grad_outputs=torch.ones_like(V_S),
                                        create_graph=True, retain_graph=True, allow_unused=True)[0]
             V_SS_tau = torch.autograd.grad(V_SS, tau, grad_outputs=torch.ones_like(V_SS),
-                                          create_graph=True, retain_graph=True, allow_unused=True)[0]
+                                           create_graph=True, retain_graph=True, allow_unused=True)[0]
             color = V_SS_tau
             return color
