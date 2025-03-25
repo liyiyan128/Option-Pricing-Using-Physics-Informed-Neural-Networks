@@ -2,6 +2,7 @@ import torch
 # import numpy as np
 from matplotlib import pyplot as plt
 from PINN.utilities import collocation_points
+from itertools import cycle
 
 
 class VanillaOptionPINN(torch.nn.Module):
@@ -19,10 +20,10 @@ class VanillaOptionPINN(torch.nn.Module):
         Strike price of the option.
     T : float
         Expiry time of the option.
-    r : float
-        Risk-free interest rate.
     sigma : float
         Volatility of the underlying asset.
+    r : float
+        Risk-free interest rate.
     S_inf : float, optional
         Upper bound of the underlying asset price. Default is 3*K.
     type : str, optional
@@ -33,7 +34,7 @@ class VanillaOptionPINN(torch.nn.Module):
         Device to run the model on. Default is 'cpu'.
     """
 
-    def __init__(self, nn, K, T, r, sigma, S_inf=None,
+    def __init__(self, nn, K, T, sigma, r, S_inf=None,
                  type='put', style='european',
                  device=None):
         super(VanillaOptionPINN, self).__init__()
@@ -50,8 +51,8 @@ class VanillaOptionPINN(torch.nn.Module):
         self.V_nn = nn.to(self.device)
         self.register_buffer('K', torch.tensor(K))
         self.register_buffer('T', torch.tensor(T))
-        self.register_buffer('r', torch.tensor(r))
         self.register_buffer('sigma', torch.tensor(sigma))
+        self.register_buffer('r', torch.tensor(r))
         self.register_buffer('S_inf', torch.tensor(S_inf) if S_inf is not None else torch.tensor(3*K))
         self.to(self.device)
 
@@ -72,7 +73,7 @@ class VanillaOptionPINN(torch.nn.Module):
         V_SS = torch.autograd.grad(V_S, S, grad_outputs=torch.ones_like(V_S),
                                    create_graph=True, retain_graph=True, allow_unused=True)[0]
         pde = V_tau - 0.5*self.sigma**2*S**2*V_SS - self.r*S*V_S + self.r*V
-        
+
         if self.style == 'european':
             return pde
         elif self.style == 'american':
@@ -85,15 +86,14 @@ class VanillaOptionPINN(torch.nn.Module):
         """Compute the initial/boundary condition loss."""
         if tau is None:
             return torch.tensor(0.)
-        return torch.mean((self.forward(tau, S) - V)**2)
+
+        ib = torch.mean((self.forward(tau, S) - V)**2)
+        return ib
 
     def loss_pde(self, tau, S):
         """Compute the PDE loss."""
         if tau is None:
             return torch.tensor(0.)
-        pde = self.pde_nn(tau, S)
-        if pde is None:
-            raise ValueError('pde is None')
         return torch.mean(self.pde_nn(tau, S)**2)
 
     def loss_data(self, tau, S, V):
@@ -121,9 +121,11 @@ class VanillaOptionPINN(torch.nn.Module):
             tau_pde=None, S_pde=None,
             tau_data=None, S_data=None, V_data=None,
             valid=False, valid_grid=(100, 100), tau_valid=None, S_valid=None,
-            N_pde=2000, sampling='sobol', resample=False,
+            N_pde=2000, sampling='sobol', resample=0,
+            epochs=200, optimizer='adam',
+            ib_batch_size=-1, pde_batch_size=-1, data_batch_size=-1,
             loss_weights=(1., 1., 1.),
-            epochs=200, optimizer='adam', verbose=True, **kwargs):
+            verbose=True, **kwargs):
         """Train the model.
 
         Parameters
@@ -131,8 +133,7 @@ class VanillaOptionPINN(torch.nn.Module):
         tau_ib, S_ib, V_ib : torch.Tensor
             Initial/boundary data points.
         tau_pde, S_pde : torch.Tensor, optional
-            Collocation points for the PDE residual. Default is None.
-            If None, collocation points are sampled using the specified method.
+            Extra collocation points. Default is None.
         tau_data, S_data, V_data : torch.Tensor, optional
             Obversed data points. Default is None.
         valid, valid_grid, tau_valid, S_valid : bool, tuple, torch.Tensor, torch.Tensor, optional
@@ -142,8 +143,8 @@ class VanillaOptionPINN(torch.nn.Module):
             Number of collocation points for the PDE residual. Default is 2000.
         sampling : str, optional
             Collocation point sampling method. Default is 'sobol'.
-        resample : bool, optional
-            Resample collocation points every resample epochs. Default is False.
+        resample : int, optional
+            Resample collocation points every resample epochs. Default is 0.
         loss_weights : tuple, optional
             Weights for the IB, PDE, and data losses. Default is (1., 1., 1.).
         epochs : int, optional
@@ -153,15 +154,17 @@ class VanillaOptionPINN(torch.nn.Module):
         verbose : bool, optional
             Print training progress. Default is True.
         **kwargs
-            Additional keyword arguments for the optimizer.
+            Additional keyword arguments.
         """
 
-        if tau_pde is None or S_pde is None:
-            # initialise sobol engine for sobol/adaptive sampling
-            if verbose:
-                print(f'No collocation points provided\nSampling {N_pde} collocation points ({sampling})')
-            sobol = torch.quasirandom.SobolEngine(dimension=2) if (sampling == 'sobol' or sampling == 'adaptive') else None
-            tau_pde, S_pde = collocation_points(self, N_pde, sampling=sampling, sobol=sobol, **kwargs)
+        # initialise sobol engine for sobol/adaptive sampling
+        sobol = torch.quasirandom.SobolEngine(dimension=2) if (sampling == 'sobol' or sampling == 'adaptive') else None
+        _tau, _S = collocation_points(self, N_pde, sampling=sampling if sampling != 'adaptive' else 'sobol', sobol=sobol, **kwargs)
+        if tau_pde is None:
+            tau_pde, S_pde = _tau, _S
+        else:
+            tau_pde = torch.cat((tau_pde, _tau), dim=0)
+            S_pde = torch.cat((S_pde, _S), dim=0)
 
         if valid:
             if tau_valid is None or S_valid is None:
@@ -170,7 +173,7 @@ class VanillaOptionPINN(torch.nn.Module):
                 S_valid, tau_valid = torch.meshgrid(S_valid, tau_valid, indexing='xy')
             S_valid = S_valid.reshape(-1, 1).requires_grad_(True)
             tau_valid = tau_valid.reshape(-1, 1).requires_grad_(True)
-    
+
         S_ib, tau_ib, V_ib, S_pde, tau_pde, S_data, tau_data, V_data, S_valid, tau_valid = \
             S_ib.to(self.device), tau_ib.to(self.device), V_ib.to(self.device), \
             S_pde.to(self.device), tau_pde.to(self.device), \
@@ -179,35 +182,70 @@ class VanillaOptionPINN(torch.nn.Module):
             V_data.to(self.device) if V_data is not None else None, \
             S_valid.to(self.device) if S_valid is not None else None, \
             tau_valid.to(self.device) if tau_valid is not None else None
-        
+
+        ib_batch_size = ib_batch_size if ib_batch_size > 0 else len(tau_ib)
+        pde_batch_size = pde_batch_size if pde_batch_size > 0 else len(tau_pde)
+        shuffle = kwargs.pop('shuffle', False)
+        ib_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(tau_ib, S_ib, V_ib),
+                                                batch_size=ib_batch_size, shuffle=shuffle)
+        pde_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(tau_pde, S_pde),
+                                                 batch_size=pde_batch_size, shuffle=shuffle)
+        if tau_data is not None:
+            data_batch_size = data_batch_size if data_batch_size > 0 else len(tau_data)
+            data_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(tau_data, S_data, V_data),
+                                                      batch_size=data_batch_size, shuffle=shuffle)
+
         resample = int(resample)
         verbose = int(verbose)
 
         if optimizer == 'adam':
-            self.optimizer = torch.optim.Adam(self.parameters(), **kwargs)
+            self.optimizer = torch.optim.Adam(self.parameters(), kwargs.pop('lr', 1e-3))
         elif optimizer == 'lbfgs':
-            self.optimizer = torch.optim.LBFGS(self.parameters(), **kwargs)   
-
-        def closure():
-            self.optimizer.zero_grad()
-            loss_ib, loss_pde, loss_data = self.loss(tau_ib, S_ib, V_ib, tau_pde, S_pde, tau_data, S_data, V_data)
-            loss = loss_weights[0]*loss_ib + loss_weights[1]*loss_pde + loss_weights[2]*loss_data
-            loss.backward(retain_graph=True)
-            return loss
+            self.optimizer = torch.optim.LBFGS(self.parameters(),
+                                               lr=kwargs.pop('lr', 1.0),
+                                               max_iter=kwargs.pop('max_iter', 20),
+                                               history_size=kwargs.pop('history_size', 100),
+                                               line_search_fn=kwargs.pop('line_search_fn', 'strong_wolfe'))
+        early_stopping = kwargs.pop('early_stopping', 10)
+        scheduler = kwargs.pop('scheduler', None)
+        if scheduler is not None:
+            scheduler = scheduler(self.optimizer, **kwargs)
 
         if verbose:
             print(f'Device: {self.device}')
             print(f'Optimizer: {optimizer}')
+        min_loss = float('inf')
+        patience = 0
         for i in range(epochs):
 
             if resample and (i+1) % resample == 0:
-                S_pde_base = S_pde.clone() if sampling == 'adaptive' else None
-                tau_pde_base = tau_pde.clone() if sampling == 'adaptive' else None
-                tau_pde, S_pde = collocation_points(self, N_pde, sampling=sampling, sobol=sobol,
-                                                    tau_pde_base=tau_pde_base, S_pde_base=S_pde_base, **kwargs)
+                tau_pde, S_pde = collocation_points(self, N_pde, sampling=sampling, sobol=sobol, **kwargs)
                 S_pde, tau_pde = S_pde.to(self.device), tau_pde.to(self.device)
+                pde_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(tau_pde, S_pde),
+                                                         batch_size=batch_size, shuffle=shuffle)
 
-            self.optimizer.step(closure)
+            pde_iter = iter(pde_loader)
+            ib_iter = iter(cycle(ib_loader))
+            data_iter = iter(cycle(data_loader)) if tau_data is not None else None
+            for tau_pde_batch, S_pde_batch in pde_iter:
+                tau_ib_batch, S_ib_batch, V_ib_batch = next(ib_iter)
+                tau_data_batch, S_data_batch, V_data_batch = next(data_iter) if tau_data is not None else (None, None, None)
+
+                def closure():
+                    self.optimizer.zero_grad()
+                    loss_ib, loss_pde, loss_data = self.loss(tau_ib_batch, S_ib_batch, V_ib_batch,
+                                                             tau_pde_batch, S_pde_batch,
+                                                             tau_data_batch, S_data_batch, V_data_batch)
+                    loss = loss_weights[0]*loss_ib + loss_weights[1]*loss_pde + loss_weights[2]*loss_data
+                    loss.backward(retain_graph=True)
+                    return loss
+
+                loss = self.optimizer.step(closure)
+                if torch.isnan(loss):
+                    break
+            if torch.isnan(loss):
+                print(f'NaN loss detected at epoch {i+1}')
+                break
 
             loss_ib, loss_pde, loss_data = self.loss(tau_ib, S_ib, V_ib, tau_pde, S_pde, tau_data, S_data, V_data, return_tensor=False)
             total = loss_ib + loss_pde + loss_data
@@ -222,9 +260,25 @@ class VanillaOptionPINN(torch.nn.Module):
             if verbose and (i+1) % verbose == 0:
                 print(f'Epoch {i+1}/{epochs}    |    Loss: {total}')
 
+            if total >= min_loss:
+                patience += 1
+                if patience >= early_stopping:
+                    if verbose:
+                        print(f'Early stopping at epoch {i+1}')
+                    break
+            else:
+                min_loss = total
+                patience = 0
+
+            if scheduler is not None:
+                if scheduler.__class__.__name__ == 'ReduceLROnPlateau':
+                    scheduler.step(total)
+                else:
+                    scheduler.step()
+
     def plot_history(self, ib=True, pde=True, data=True, valid=True, range=-1, log_scale=True,
-                  title='Loss History', figsize=(10, 8), fontsize=16,
-                  save=False, file_name='loss_history.pdf'):
+                     title='Loss History', figsize=(10, 8), fontsize=16,
+                     save=False, file_name='loss_history.pdf'):
         """Plot the loss history."""
         plt.figure(figsize=figsize)
         plt.plot(self.loss_history['total'][:range], label='Total loss', c='red')
@@ -235,7 +289,7 @@ class VanillaOptionPINN(torch.nn.Module):
         if data and len(self.loss_history['data']) > 0:
             plt.plot(self.loss_history['data'][:range], label='Data loss ($MSE_{data}$)', ls='--', alpha=0.8)
         if valid and len(self.loss_history['valid']) > 0:
-            plt.plot(self.loss_history['valid'][:range], label='Validation loss', ls='--', alpha=0.8)
+            plt.plot(self.loss_history['valid'][:range], label='Validation loss', c='k', alpha=0.8)
         plt.xlabel('Epoch', fontsize=fontsize)
         plt.ylabel('Loss', fontsize=fontsize)
         if log_scale:
@@ -249,7 +303,7 @@ class VanillaOptionPINN(torch.nn.Module):
 
     def evaluate_greeks(self, tau, S, greeks='delta'):
         """Compute the option greeks.
-        
+
         Supported greeks: 'delta', 'theta', 'gamma', 'charm', 'speed', 'color'.
         """
         greeks = greeks.lower()
