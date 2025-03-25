@@ -6,7 +6,7 @@ from scipy.ndimage import gaussian_filter
 import QuantLib as ql
 
 
-def V_BS(tau, S, K, r, sigma, type='put'):
+def V_BS(tau, S, K, sigma, r, type='put'):
     type = type.lower()
 
     epsilon = max(np.finfo(float).eps, 1e-16)
@@ -24,7 +24,7 @@ def V_BS(tau, S, K, r, sigma, type='put'):
     return res
 
 
-def V_BS_CN(m, n,  K, T,  r, sigma, S_inf,
+def V_BS_CN(m, n,  K, T,  sigma, r, S_inf,
             type='put', style='european'):
     """
     Cranck-Nicolson V(t, S)
@@ -43,10 +43,16 @@ def V_BS_CN(m, n,  K, T,  r, sigma, S_inf,
         V[0, :] = np.maximum(K - S, 0)  # at maturity
         V[:, 0] = K * np.exp(-r * t)  # S = 0
         V[:, -1] = 0  # S = S_inf
-    elif type == 'call':
+    if type == 'call':
         V[0, :] = np.maximum(S - K, 0)
         V[:, 0] = 0
         V[:, -1] = S_inf - K * np.exp(-r * t)
+
+    if style == 'american':
+        intrinsic = np.where(type == 'put',
+                             np.maximum(K - S, 0),
+                             np.maximum(S - K, 0))
+        V = np.maximum(V, intrinsic)
 
     # construct matrix
     D1 = sp.diags(np.arange(1, m)).tocsc()
@@ -75,10 +81,10 @@ def V_BS_CN(m, n,  K, T,  r, sigma, S_inf,
             V_next = np.maximum(V_next, intrinsic)
         V[i+1, 1:-1] = V_next
 
-    return V, S, t
+    return V, t, S
 
 
-def V_quantlib(tau, S, K, T, r, sigma, q=0,
+def V_quantlib(tau, S, K, T, sigma, r, q=0,
                type='put', style='american',
                model='black_scholes', method=None, **kwargs):
     t = T - tau
@@ -121,7 +127,7 @@ def V_quantlib(tau, S, K, T, r, sigma, q=0,
             dividendCurve = ql.FlatForward(0, calendar, ql.QuoteHandle(r), dayCounter)
             dividendTS = ql.YieldTermStructureHandle(dividendCurve)
             process = ql.BlackScholesMertonProcess(spotHandle, dividendTS, riskFreeTS, volTS)
-            
+
     if method in ['bs', 'black_scholes', 'analytic']:
         engine = ql.AnalyticEuropeanEngine(process)
     elif method in ['crr', 'binomial', 'tree', 'binomial_tree']:
@@ -129,16 +135,16 @@ def V_quantlib(tau, S, K, T, r, sigma, q=0,
         engine = ql.BinomialVanillaEngine(process, 'crr', steps)
     elif method in ['mc', 'monte_carlo']:
         timeSteps = kwargs.get('timeSteps', 20)
-        requiredSamples = kwargs.get('requiredSamples', 250000)
+        requiredSamples = kwargs.get('requiredSamples', 10000)
         if style == 'american':
-            engine = ql.MCAmericanEngine(process, #'PseudoRandom', 
+            engine = ql.MCAmericanEngine(process, 'PseudoRandom', 
                                          timeSteps=timeSteps,
                                          requiredSamples=requiredSamples)
         elif style == 'european':
-            engine = ql.MCEuropeanEngine(process, #"PseudoRandom",
+            engine = ql.MCEuropeanEngine(process, "PseudoRandom",
                                          timeSteps=timeSteps,
                                          requiredSamples=requiredSamples)
-    
+
     option.setPricingEngine(engine)
     V = np.zeros_like(t)
     for i in range(len(t)):
@@ -148,7 +154,7 @@ def V_quantlib(tau, S, K, T, r, sigma, q=0,
     return V.reshape(shape), (T-t).reshape(shape), S.reshape(shape)
 
 
-def european_option_greeks(tau, S, K, r, sigma, greeks='delta', type='put'):
+def european_option_greeks(tau, S, K, sigma, r, greeks='delta', type='put'):
     greeks = greeks.lower()
     type = type.lower()
 
@@ -203,21 +209,12 @@ def european_option_greeks(tau, S, K, r, sigma, greeks='delta', type='put'):
 
 def collocation_points(model, N_pde=2000,
                        sampling='sobol', sobol=None,
-                       grid=(1000, 1000), alpha_beta_tau=(.5, .5),
-                       adaptive_base='sobol', tau_pde_base=None, S_pde_base=None,
                        **kwargs):
     """
     model: PINN model
     sobol: sobol engine
-    grid: grid size (tau, S) for pde error evaluation for adaptive sampling
-    alpha_beta_tau: alpha and beta for beta distribution for tau in adaptive sampling
-    adaptive_base: base sampling for adaptive sampling
-    tau_pde_base: base samples for tau in adaptive sampling
-    S_pde_base: base samples for S in adaptive sampling
     """
-    grid = kwargs.get('grid', grid)
-    alpha_beta_tau = kwargs.get('alpha_beta_tau', alpha_beta_tau)
-    adaptive_base = kwargs.get('adaptive_base', adaptive_base)
+    adaptive_base = kwargs.get('adaptive_base', 0.1)
 
     S_pde = None
     tau_pde = None
@@ -231,69 +228,69 @@ def collocation_points(model, N_pde=2000,
         sobol_samples = sobol.draw(N_pde)
         S_pde = sobol_samples[:, 0].reshape(-1, 1)*model.S_inf
         tau_pde = sobol_samples[:, 1].reshape(-1, 1)*model.T
-    elif sampling == 'importance':
-        n_samples = N_pde // 2
-        n1 = n_samples // 2
-        n2 = n_samples - n1
-        # normal for S centred at K
-        S_pde = torch.normal(mean=model.K, std=model.K/4, size=(n1, 1))
-        # exp dist for S biased towards 0
-        S_pde = torch.concat([S_pde, torch.distributions.exponential.Exponential(2).sample((n2, 1))], dim=0)
-        S_pde = torch.clamp(S_pde, 0, model.S_inf)  # S in [0, S_inf]
-        # beta dist for tau biased towards 0
-        # try (alpha, beta) = (.5, .5), (2, 5)
-        tau_pde = torch.distributions.beta.Beta(alpha_beta_tau[0], alpha_beta_tau[1]).sample((n_samples, 1))*model.T
-        # # exponential dist for tau
-        # tau_pde = torch.distributions.exponential.Exponential(1/(T/4)).sample((n_samples, 1))*T
-        tau_pde = torch.clamp(tau_pde, 0, model.T)  # tau in [0, T]
-
-        # base samples
-        if sobol is not None:
-            sobol = torch.quasirandom.SobolEngine(dimension=2)
-            base_samples = sobol.draw(N_pde - n_samples)
-        else:
-            base_samples = torch.concat([torch.rand(N_pde - n_samples, 1), torch.rand(N_pde - n_samples, 1)], dim=1)
-        # mix with base_samples
-        S_pde = torch.cat([S_pde, base_samples[:, 0].reshape(-1, 1)*model.S_inf], dim=0)
-        tau_pde = torch.cat([tau_pde, base_samples[:, 1].reshape(-1, 1)*model.T], dim=0)
     elif sampling == 'adaptive':
-        if S_pde_base is None or tau_pde_base is None:
-            # sobol/uniform as base samples for adaptive sampling
-            print(f'Use {adaptive_base} as base samples for adaptive sampling')
+        tau_eval, S_eval = collocation_points(model, N_pde*2, sampling='sobol', sobol=torch.quasirandom.SobolEngine(dimension=2))
+        pde_err_abs = model.pde_nn(S_eval.reshape(-1, 1), tau_eval.reshape(-1, 1)).abs().detach().numpy()
+        # Scott's rule n**(-1./(d+4))
+        sigma_scott = pde_err_abs.std() * pde_err_abs.size ** (-1/6)
+        # Apply Gaussian filter
+        pde_err_abs = gaussian_filter(pde_err_abs, sigma=sigma_scott).flatten()
+        pde_err_abs = np.where(np.isnan(pde_err_abs), 0, pde_err_abs)  # remove nan
+
+        # sample from pde_err_abs
+        n_samples = int((1-adaptive_base)*N_pde)
+        probs = pde_err_abs / pde_err_abs.sum()
+        probs = np.where(np.isnan(probs), 0, probs)  # remove nan
+        if np.all(probs == 0):
+            print(f'Zero probabilities, resample using {sampling}')
             tau_pde, S_pde = collocation_points(model, N_pde, sampling=adaptive_base, sobol=sobol, **kwargs)
         else:
-            S_eval = torch.linspace(0, model.S_inf, grid[1])
-            tau_eval = torch.linspace(0, model.T, grid[0])
-            S_eval, tau_eval = torch.meshgrid(S_eval, tau_eval, indexing='xy')
-            S_eval.requires_grad = True
-            tau_eval.requires_grad = True
-            pde_err_abs = model.pde_nn(S_eval.reshape(-1, 1), tau_eval.reshape(-1, 1)).reshape(grid).abs().detach().numpy()
-            # Scott's rule n**(-1./(d+4))
-            sigma_scott = pde_err_abs.std() * pde_err_abs.size ** (-1/6)
-            # Apply Gaussian filter
-            pde_err_abs = gaussian_filter(pde_err_abs, sigma=sigma_scott)
-            pde_err_abs = np.where(np.isnan(pde_err_abs), 0, pde_err_abs)  # remove nan
-
-            # sample from pde_err_abs
-            n_samples = int(0.75*N_pde)
-            probs = pde_err_abs.flatten() / pde_err_abs.flatten().sum()
-            probs = np.where(np.isnan(probs), 0, probs)  # remove nan
-            if np.all(probs == 0):
-                print(f'Zero probabilities, resample using {sampling}')
-                tau_pde, S_pde = collocation_points(model, N_pde, sampling=adaptive_base, sobol=sobol, **kwargs)
-            else:
-                idx = np.random.choice(grid[0]*grid[1], size=n_samples, p=probs)
-                S_pde_resample = S_eval.flatten()[idx].reshape(-1, 1)
-                tau_pde_resample = tau_eval.flatten()[idx].reshape(-1, 1)
-
-                # Maintain original data size
-                idx = np.random.choice(N_pde, size=N_pde - n_samples, replace=False)
-                S_pde = torch.cat([S_pde_resample, S_pde_base[idx]])
-                tau_pde = torch.cat([tau_pde_resample, tau_pde_base[idx]])
+            idx = np.random.choice(pde_err_abs.size, size=n_samples, replace=False, p=probs)
+            S_pde_resample = S_eval[idx]
+            tau_pde_resample = tau_eval[idx]
+            # Maintain original data size
+            tau_base, S_base = collocation_points(model, N_pde-n_samples, sampling='sobol', sobol=torch.quasirandom.SobolEngine(dimension=2))
+            S_pde = torch.cat([S_pde_resample, S_base])
+            tau_pde = torch.cat([tau_pde_resample, tau_base])
 
     S_pde = S_pde.detach().requires_grad_(True)
     tau_pde = tau_pde.detach().requires_grad_(True)
     return tau_pde, S_pde
+
+
+def collocation_points_v2(model, N_pde=2000,
+                          sampling='sobol', sobol=None,
+                          **kwargs):
+    """
+    model: PINN model
+    sobol: sobol engine
+    """
+
+    S_pde = None
+    tau_pde = None
+    K_pde = None
+    T_pde = None
+
+    if sampling == 'sobol':
+        if sobol is None:
+            raise ValueError('sobol engine is required')
+        sobol_samples = sobol.draw(N_pde)
+        S_pde = sobol_samples[:, 0].reshape(-1, 1)*model.S_inf
+        tau_pde = sobol_samples[:, 1].reshape(-1, 1)*model.T
+        if model.K_min is not None:
+            K_pde = sobol_samples[:, 2].reshape(-1, 1)*(model.K_max-model.K_min) + model.K_min
+        if model.T_min is not None:
+            T_pde = sobol_samples[:, 3].reshape(-1, 1)*(model.T_max-model.T_min) + model.T_min
+    else:
+        raise NotImplementedError(f'{sampling} is not implemented')
+
+    S_pde = S_pde.detach().requires_grad_(True)
+    tau_pde = tau_pde.detach().requires_grad_(True)
+    if K_pde is not None:
+        K_pde = K_pde.detach().requires_grad_(True)
+    if T_pde is not None:
+        T_pde = T_pde.detach().requires_grad_(True)
+    return tau_pde, S_pde, K_pde, T_pde
 
 
 if __name__ == '__main__':
@@ -311,4 +308,11 @@ if __name__ == '__main__':
 
     greeks = ['Delta', 'Theta', 'Gamma', 'Charm', 'Speed', 'Color']
     for greek in greeks:
-        greek_true = european_option_greeks(tau_eval_np, S_eval_np, K, r, sigma, greek, 'put')
+        greek_true = european_option_greeks(tau_eval_np, S_eval_np, K, sigma, r, greek, 'put')
+
+
+def xavier_init(m):
+    if isinstance(m, torch.nn.Linear):
+        torch.nn.init.xavier_uniform_(m.weight)
+        if m.bias is not None:
+            torch.nn.init.zeros_(m.bias)
