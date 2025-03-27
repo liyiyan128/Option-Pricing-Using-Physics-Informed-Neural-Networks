@@ -32,6 +32,9 @@ def V_BS_CN(m, n,  K, T,  sigma, r, S_inf,
     type = type.lower()
     style = style.lower()
 
+    scale = K
+    K = K / scale
+    S_inf = S_inf / scale
     S = np.linspace(0, S_inf, m+1)
     t = np.linspace(0, T, n+1)
     dt = T / n
@@ -81,7 +84,7 @@ def V_BS_CN(m, n,  K, T,  sigma, r, S_inf,
             V_next = np.maximum(V_next, intrinsic)
         V[i+1, 1:-1] = V_next
 
-    return V, t, S
+    return V*scale, t, S*scale
 
 
 def V_quantlib(tau, S, K, T, sigma, r, q=0,
