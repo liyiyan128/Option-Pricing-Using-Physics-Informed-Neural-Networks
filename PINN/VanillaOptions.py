@@ -1,5 +1,4 @@
 import torch
-# import numpy as np
 from matplotlib import pyplot as plt
 from PINN.utilities import collocation_points
 from itertools import cycle
@@ -31,92 +30,63 @@ class VanillaOptionPINN(torch.nn.Module):
                  type='put', style='european',
                  device=None):
         super(VanillaOptionPINN, self).__init__()
-        self.loss_history = {
-            'ib': [],
-            'pde': [],
-            'data': [],
-            'total': [],
-            'valid': [],
-        }
-        self.type = type.lower()
-        self.style = style.lower()
         self.device = device or 'cpu'
         self.V_nn = nn.to(self.device)
+        self.loss_history = {key: [] for key in ['ib', 'pde', 'data', 'total', 'valid']}
+        self.type, self.style = type.lower(), style.lower()
         self.register_buffer('K', torch.tensor(K))
         self.register_buffer('T', torch.tensor(T))
         self.register_buffer('sigma', torch.tensor(sigma))
         self.register_buffer('r', torch.tensor(r))
-        self.register_buffer('S_inf', torch.tensor(S_inf)
-                             if S_inf is not None else torch.tensor(3*K))
-        if isinstance(scale, bool):
-            scale = K if scale else 1
-        self.register_buffer('scale', torch.tensor(scale))
+        self.register_buffer('S_inf', torch.tensor(S_inf or 3 * K))
+        self.register_buffer('scale', torch.tensor(K if scale is True else (scale if scale else 1)))
         self.to(self.device)
 
     def forward(self, tau, S):
         S_scaled = S/self.scale
         V_scaled = self.V_nn(torch.cat((tau, S_scaled), dim=1))
-        return V_scaled*self.scale  # to original scale
+        return V_scaled*self.scale
 
     def pde_nn(self, tau, S):
         S_scaled = S/self.scale
         V_scaled = self.V_nn(torch.cat((tau, S_scaled), dim=1))
-        V_tau = torch.autograd.grad(V_scaled, tau,
-                                    grad_outputs=torch.ones_like(V_scaled),
-                                    create_graph=True, retain_graph=True, allow_unused=True)[0]
-        V_S = torch.autograd.grad(V_scaled, S_scaled,
-                                  grad_outputs=torch.ones_like(V_scaled),
-                                  create_graph=True, retain_graph=True, allow_unused=True)[0]
-        V_SS = torch.autograd.grad(V_S, S_scaled,
-                                   grad_outputs=torch.ones_like(V_S),
-                                   create_graph=True, retain_graph=True, allow_unused=True)[0]
+
+        def grad(y, x):
+            return torch.autograd.grad(y, x, grad_outputs=torch.ones_like(y),
+                                       create_graph=True, retain_graph=True, allow_unused=True)[0]
+
+        V_tau = grad(V_scaled, tau)
+        V_S = grad(V_scaled, S_scaled)
+        V_SS = grad(V_S, S_scaled)
+
         pde = V_tau - 0.5*self.sigma**2*S_scaled**2*V_SS - self.r*S_scaled*V_S + self.r*V_scaled
+
         if self.style == 'european':
             return pde
-        elif self.style == 'american':
-            K_scaled = self.K/self.scale
-            intrinsic = torch.where(torch.tensor(self.type == 'put'),
-                                    torch.maximum(K_scaled-S_scaled, torch.zeros_like(S_scaled)),
-                                    torch.maximum(S_scaled-K_scaled, torch.zeros_like(S_scaled)))
-            return torch.min(pde, V_scaled-intrinsic)  # linear complementarity condition
+        K_scaled = self.K/self.scale
+        intrinsic = torch.where(torch.tensor(self.type=='put'),
+                                torch.maximum(K_scaled-S_scaled, torch.zeros_like(S_scaled)),
+                                torch.maximum(S_scaled-K_scaled, torch.zeros_like(S_scaled)))
+        return torch.min(pde, V_scaled-intrinsic)
 
     def loss_ib(self, tau, S, V):
-        if tau is None:
-            return torch.tensor(0.)
-        # ib = torch.mean(self.forward(tau, S) - V)**2
-        S_scaled = S/self.scale
-        V_scaled = V/self.scale
-        V_nn = self.V_nn(torch.cat((tau, S_scaled), dim=1))
-        ib = torch.mean((V_nn - V_scaled)**2)
-        return ib
+        return torch.tensor(0.) if tau is None else torch.mean((self.forward(tau, S)/self.scale - V/self.scale)**2)
 
     def loss_pde(self, tau, S):
-        if tau is None:
-            return torch.tensor(0.)
-        pde = self.pde_nn(tau, S)
-        return torch.mean(pde**2)
+        return torch.tensor(0.) if tau is None else torch.mean(self.pde_nn(tau, S)**2)
 
     def loss_data(self, tau, S, V):
-        if tau is None:
-            return torch.tensor(0.)
-        # return torch.mean((self.forward(tau, S) - V)**2)
-        S_scaled = S/self.scale
-        V_scaled = V/self.scale
-        return torch.mean((self.V_nn(torch.cat((tau, S_scaled), dim=1))-V_scaled)**2)
+        return torch.tensor(0.) if tau is None else torch.mean((self.forward(tau, S)/self.scale - V/self.scale)**2)
 
     def loss(self,
              tau_ib=None, S_ib=None, V_ib=None,
              tau_pde=None, S_pde=None,
              tau_data=None, S_data=None, V_data=None,
              return_tensor=True):
-        if return_tensor:
-            return self.loss_ib(tau_ib, S_ib, V_ib), \
-                   self.loss_pde(tau_pde, S_pde), \
-                   self.loss_data(tau_data, S_data, V_data)
-        else:
-            return self.loss_ib(tau_ib, S_ib, V_ib).detach().item(), \
-                   self.loss_pde(tau_pde, S_pde).detach().item(), \
-                   self.loss_data(tau_data, S_data, V_data).detach().item()
+        losses = (self.loss_ib(tau_ib, S_ib, V_ib),
+                  self.loss_pde(tau_pde, S_pde),
+                  self.loss_data(tau_data, S_data, V_data))
+        return losses if return_tensor else tuple(loss.detach().item() for loss in losses)
 
     def fit(self,
             tau_ib, S_ib, V_ib,
@@ -154,12 +124,10 @@ class VanillaOptionPINN(torch.nn.Module):
             Batch size for initial/boundary data, PDE collocation points, and observed data.
         loss_weights : tuple, optional
             Weights for the IB, PDE, and data losses.
-        kwargs : dict, optional
-            Additional arguments for optimizer and learning rate scheduler.
         """
 
-        # initialise sobol engine for sobol/adaptive sampling
-        sobol = torch.quasirandom.SobolEngine(dimension=2) if (sampling == 'sobol' or sampling == 'adaptive') else None
+        # Initialise sobol engine for sobol/adaptive sampling
+        sobol = torch.quasirandom.SobolEngine(dimension=2) if sampling in ['sobol', 'adaptive'] else None
         _tau, _S = collocation_points(self, N_pde,
                                       sampling=sampling if sampling != 'adaptive' else 'sobol',
                                       sobol=sobol, **kwargs)
@@ -174,17 +142,14 @@ class VanillaOptionPINN(torch.nn.Module):
                 S_valid = torch.linspace(0, self.S_inf, valid_grid[1])
                 tau_valid = torch.linspace(0, self.T, valid_grid[0])
                 S_valid, tau_valid = torch.meshgrid(S_valid, tau_valid, indexing='xy')
-            S_valid = S_valid.reshape(-1, 1).requires_grad_(True)
             tau_valid = tau_valid.reshape(-1, 1).requires_grad_(True)
+            S_valid = S_valid.reshape(-1, 1).requires_grad_(True)
 
-        S_ib, tau_ib, V_ib, S_pde, tau_pde, S_data, tau_data, V_data, S_valid, tau_valid = \
-            S_ib.to(self.device), tau_ib.to(self.device), V_ib.to(self.device), \
-            S_pde.to(self.device), tau_pde.to(self.device), \
-            S_data.to(self.device) if S_data is not None else None, \
-            tau_data.to(self.device) if tau_data is not None else None, \
-            V_data.to(self.device) if V_data is not None else None, \
-            S_valid.to(self.device) if S_valid is not None else None, \
-            tau_valid.to(self.device) if tau_valid is not None else None
+        def to_device(*args):
+            return (arg.to(self.device) for arg in args)
+
+        tau_ib, S_ib, V_ib, tau_pde, S_pde, tau_data, S_data, V_data, tau_valid, S_valid = to_device(
+            tau_ib, S_ib, V_ib, tau_pde, S_pde, tau_data, S_data, V_data, tau_valid, S_valid)
 
         ib_batch_size = ib_batch_size if ib_batch_size > 0 else len(tau_ib)
         pde_batch_size = pde_batch_size if pde_batch_size > 0 else len(tau_pde)
@@ -193,6 +158,7 @@ class VanillaOptionPINN(torch.nn.Module):
                                                 batch_size=ib_batch_size, shuffle=shuffle)
         pde_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(tau_pde, S_pde),
                                                  batch_size=pde_batch_size, shuffle=shuffle)
+        data_loader = None
         if tau_data is not None:
             data_batch_size = data_batch_size if data_batch_size > 0 else len(tau_data)
             data_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(tau_data, S_data, V_data),
@@ -220,36 +186,33 @@ class VanillaOptionPINN(torch.nn.Module):
         min_loss = float('inf')
         patience = 0
         for i in range(epochs):
-
             if resample and (i+1) % resample == 0:
                 tau_pde, S_pde = collocation_points(self, N_pde,
                                                     sampling=sampling, sobol=sobol, **kwargs)
-                S_pde, tau_pde = S_pde.to(self.device), tau_pde.to(self.device)
+                tau_pde, S_pde = to_device(tau_pde, S_pde)
                 pde_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(tau_pde, S_pde),
                                                          batch_size=pde_batch_size, shuffle=shuffle)
 
             pde_iter = iter(pde_loader)
             ib_iter = iter(cycle(ib_loader))
-            data_iter = iter(cycle(data_loader)) if tau_data is not None else None
+            data_iter = iter(cycle(data_loader)) if data_loader else None
             for tau_pde_batch, S_pde_batch in pde_iter:
                 tau_ib_batch, S_ib_batch, V_ib_batch = next(ib_iter)
-                tau_data_batch, S_data_batch, V_data_batch = next(data_iter) if tau_data is not None else (None, None, None)
+                tau_data_batch, S_data_batch, V_data_batch = next(data_iter) if data_iter else (None, None, None)
 
                 def closure():
                     self.optimizer.zero_grad()
                     loss_ib, loss_pde, loss_data = self.loss(tau_ib_batch, S_ib_batch, V_ib_batch,
                                                              tau_pde_batch, S_pde_batch,
                                                              tau_data_batch, S_data_batch, V_data_batch)
-                    loss = loss_weights[0]*loss_ib + loss_weights[1]*loss_pde + loss_weights[2]*loss_data
+                    loss = sum(w * l for w, l in zip(loss_weights, [loss_ib, loss_pde, loss_data]))
                     loss.backward(retain_graph=True)
                     return loss
 
                 loss = self.optimizer.step(closure)
                 if torch.isnan(loss):
-                    break
-            if torch.isnan(loss):
-                print(f'NaN loss detected at epoch {i+1}')
-                break
+                    print(f'NaN loss detected at epoch {epoch + 1}')
+                    return
 
             loss_ib, loss_pde, loss_data = self.loss(tau_ib, S_ib, V_ib,
                                                      tau_pde, S_pde,
@@ -258,123 +221,83 @@ class VanillaOptionPINN(torch.nn.Module):
             total = loss_ib + loss_pde + loss_data
             self.loss_history['ib'].append(loss_ib)
             self.loss_history['pde'].append(loss_pde)
-            if tau_data is not None:
-                self.loss_history['data'].append(loss_data)
+            self.loss_history['data'].append(loss_data) if tau_data else None
             self.loss_history['total'].append(total)
             if valid:
                 loss_valid = self.loss_pde(tau_valid, S_valid).detach().item()
                 self.loss_history['valid'].append(loss_valid)
+
             if verbose and (i+1) % verbose == 0:
                 print(f'Epoch {i+1}/{epochs}    |    Loss: {total}')
 
+            # Early stopping
             if total >= min_loss:
                 patience += 1
                 if patience >= early_stopping:
                     if verbose:
                         print(f'Early stopping at epoch {i+1}')
-                    break
+                    return
             else:
-                min_loss = total
-                patience = 0
+                min_loss, patience = total, 0
 
-            if scheduler is not None:
-                if scheduler.__class__.__name__ == 'ReduceLROnPlateau':
-                    scheduler.step(total)
-                else:
-                    scheduler.step()
+            if scheduler:
+                scheduler.step(total)
 
     def plot_history(self, ib=True, pde=True, data=True, valid=True,
                      range=-1, log_scale=True,
                      title='Loss History', figsize=(10, 8), fontsize=16,
                      save=False, file_name='loss_history.pdf'):
-        """Plot the loss history."""
         plt.figure(figsize=figsize)
-        plt.plot(self.loss_history['total'][:range],
-                 label='Total loss', c='red')
-        if ib:
-            plt.plot(self.loss_history['ib'][:range],
-                     label='IB loss ($MSE_B$)', ls='--', alpha=0.8)
-        if pde:
-            plt.plot(self.loss_history['pde'][:range],
-                     label='PDE loss ($MSE_F$)', ls='--', alpha=0.8)
-        if data and len(self.loss_history['data']) > 0:
-            plt.plot(self.loss_history['data'][:range],
-                     label='Data loss ($MSE_{data}$)', ls='--', alpha=0.8)
-        if valid and len(self.loss_history['valid']) > 0:
-            plt.plot(self.loss_history['valid'][:range],
-                     label='Validation loss', c='k', alpha=0.8)
+        plt.plot(self.loss_history['total'][:range], label='Total loss', c='red')
+
+        loss_labels = {'ib': 'IB loss ($MSE_B$)',
+                       'pde': 'PDE loss ($MSE_F$)',
+                       'data': 'Data loss ($MSE_{data}$)',
+                       'valid': 'Validation loss'}
+        colors = {'ib': 'blue', 'pde': 'green', 'data': 'orange', 'valid': 'black'}
+
+        for key in ['ib', 'pde', 'data', 'valid']:
+            if locals()[key] and len(self.loss_history[key]) > 0:
+                plt.plot(self.loss_history[key][:range],
+                         label=loss_labels[key], ls='--', alpha=0.8, c=colors[key])
         plt.xlabel('Epoch', fontsize=fontsize)
         plt.ylabel('Loss', fontsize=fontsize)
-        if log_scale:
-            plt.yscale('log')
+        plt.yscale('log') if log_scale else None
         plt.title(title, fontsize=fontsize+2)
         plt.legend(fontsize=fontsize+2)
         plt.tight_layout()
-        if save:
-            plt.savefig(file_name, bbox_inches='tight')
+        plt.savefig(file_name, bbox_inches='tight') if save else None
         plt.show()
 
     def evaluate_greeks(self, tau, S, greeks='delta'):
-        """Compute the option greeks.
-
-        Supported greeks: 'delta', 'theta', 'gamma', 'charm', 'speed', 'color'.
-        """
+        """Supported greeks: 'delta', 'theta', 'gamma', 'charm', 'speed', 'color'."""
         greeks = greeks.lower()
         V = self.forward(tau, S)
 
+        def grad(y, x):
+            return torch.autograd.grad(y, x, grad_outputs=torch.ones_like(y),
+                                       create_graph=True, retain_graph=True, allow_unused=True)[0]
+
+        V_S = grad(V, S)
+        V_tau = grad(V, tau)
+
         if greeks == 'delta':
-            V_S = torch.autograd.grad(V, S,
-                                      grad_outputs=torch.ones_like(V),
-                                      create_graph=True, retain_graph=True, allow_unused=True)[0]
-            delta = V_S
-            return delta
-        elif greeks == 'theta' or greeks == 'time_decay':
-            V_tau = torch.autograd.grad(V, tau,
-                                        grad_outputs=torch.ones_like(V),
-                                        create_graph=True, retain_graph=True, allow_unused=True)[0]
-            theta = -V_tau
-            return theta
+            return V_S
+        elif greeks in ['theta', 'time_decay']:
+            return -V_tau
         elif greeks == 'gamma':
-            V_S = torch.autograd.grad(V, S,
-                                      grad_outputs=torch.ones_like(V),
-                                      create_graph=True, retain_graph=True, allow_unused=True)[0]
-            V_SS = torch.autograd.grad(V_S, S, grad_outputs=torch.ones_like(V_S),
-                                       create_graph=True, retain_graph=True, allow_unused=True)[0]
-            gamma = V_SS
-            return gamma
-        elif greeks == 'charm' or greeks == 'delta_decay':
-            # charm = -dDelta/dtau = dTheta/dS = -d^2V/dtaudS
-            V_S = torch.autograd.grad(V, S,
-                                      grad_outputs=torch.ones_like(V),
-                                      create_graph=True, retain_graph=True, allow_unused=True)[0]
-            V_S_tau = torch.autograd.grad(V_S, tau,
-                                          grad_outputs=torch.ones_like(V_S),
-                                          create_graph=True, retain_graph=True, allow_unused=True)[0]
-            charm = -V_S_tau
-            return charm
+            V_SS = grad(V_S, S)
+            return V_SS
+        elif greeks in ['charm', 'delta_decay']:
+            V_S_tau = grad(V_S, tau)
+            return -V_S_tau
         elif greeks == 'speed':
-            # speed = dGamma/dS = d^3V/dS^2
-            V_S = torch.autograd.grad(V, S,
-                                      grad_outputs=torch.ones_like(V),
-                                      create_graph=True, retain_graph=True, allow_unused=True)[0]
-            V_SS = torch.autograd.grad(V_S, S,
-                                       grad_outputs=torch.ones_like(V_S),
-                                       create_graph=True, retain_graph=True, allow_unused=True)[0]
-            V_SSS = torch.autograd.grad(V_SS, S,
-                                        grad_outputs=torch.ones_like(V_SS),
-                                        create_graph=True, retain_graph=True, allow_unused=True)[0]
-            speed = V_SSS
-            return speed
-        elif greeks == 'color' or greeks == 'gamma_decay':
-            # color = dGamma/dtau = d^3V/dS^2dtau
-            V_S = torch.autograd.grad(V, S,
-                                      grad_outputs=torch.ones_like(V),
-                                      create_graph=True, retain_graph=True, allow_unused=True)[0]
-            V_SS = torch.autograd.grad(V_S, S,
-                                       grad_outputs=torch.ones_like(V_S),
-                                       create_graph=True, retain_graph=True, allow_unused=True)[0]
-            V_SS_tau = torch.autograd.grad(V_SS, tau,
-                                           grad_outputs=torch.ones_like(V_SS),
-                                           create_graph=True, retain_graph=True, allow_unused=True)[0]
-            color = V_SS_tau
-            return color
+            V_SS = grad(V_S, S)
+            V_SSS = grad(V_SS, S)
+            return V_SSS
+        elif greeks in ['color', 'gamma_decay']:
+            V_SS = grad(V_S, S)
+            V_SS_tau = grad(V_SS, tau)
+            return V_SS_tau
+        else:
+            raise ValueError(f"Greek '{greeks}' is not supported.")
