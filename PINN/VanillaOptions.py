@@ -146,7 +146,7 @@ class VanillaOptionPINN(torch.nn.Module):
             S_valid = S_valid.reshape(-1, 1).requires_grad_(True)
 
         def to_device(*args):
-            return (arg.to(self.device) for arg in args)
+            return (arg.to(self.device) if arg is not None else None for arg in args)
 
         tau_ib, S_ib, V_ib, tau_pde, S_pde, tau_data, S_data, V_data, tau_valid, S_valid = to_device(
             tau_ib, S_ib, V_ib, tau_pde, S_pde, tau_data, S_data, V_data, tau_valid, S_valid)
@@ -211,7 +211,7 @@ class VanillaOptionPINN(torch.nn.Module):
 
                 loss = self.optimizer.step(closure)
                 if torch.isnan(loss):
-                    print(f'NaN loss detected at epoch {epoch + 1}')
+                    print(f'NaN loss detected at epoch {i + 1}')
                     return
 
             loss_ib, loss_pde, loss_data = self.loss(tau_ib, S_ib, V_ib,
@@ -221,7 +221,7 @@ class VanillaOptionPINN(torch.nn.Module):
             total = loss_ib + loss_pde + loss_data
             self.loss_history['ib'].append(loss_ib)
             self.loss_history['pde'].append(loss_pde)
-            self.loss_history['data'].append(loss_data) if tau_data else None
+            self.loss_history['data'].append(loss_data) if tau_data is not None else None
             self.loss_history['total'].append(total)
             if valid:
                 loss_valid = self.loss_pde(tau_valid, S_valid).detach().item()
@@ -254,7 +254,7 @@ class VanillaOptionPINN(torch.nn.Module):
                        'pde': 'PDE loss ($MSE_F$)',
                        'data': 'Data loss ($MSE_{data}$)',
                        'valid': 'Validation loss'}
-        colors = {'ib': 'blue', 'pde': 'green', 'data': 'orange', 'valid': 'black'}
+        colors = {'ib': 'C0', 'pde': 'C1', 'data': 'C2', 'valid': 'black'}
 
         for key in ['ib', 'pde', 'data', 'valid']:
             if locals()[key] and len(self.loss_history[key]) > 0:
